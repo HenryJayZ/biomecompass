@@ -1,0 +1,16 @@
+[package]
+name = "horizon-biomecompass"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+description = "Biome Compass: a native Horizon mod that finds the nearest biome of a kind and points the way"
+publish = false
+
+[lib]
+# This exact source is also injected as `crate::game::biomecompass` by
+# horizon-mixins. The adapter (native.rs) and the hook helpers only compile
+# inside Horizon.
+path = "mixins/biomecompass/runtime.rs"
+
+[dependencies]
