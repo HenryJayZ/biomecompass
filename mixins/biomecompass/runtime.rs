@@ -1,4 +1,4 @@
-// Biome Compass: find the nearest biome of a kind, then follow the needle.
+// BiomeCompass: find the nearest biome of a kind, then follow the needle.
 //
 // Original implementation for Horizon (a horizon-mixins native mod). This file is
 // both the standalone, unit-tested Cargo library and the injected
@@ -212,7 +212,7 @@ impl Config {
             Teleport::Off => "off",
         };
         format!(
-            "# Biome Compass settings. Options > Mods > Biome Compass > Settings writes\n\
+            "# BiomeCompass settings. Options > Mods > BiomeCompass > Settings writes\n\
              # this file. Edited by hand, it is read again by `/biomecompass reload`\n\
              # (operators) or the page's \"Read config.txt again\" button.\n\
              \n\
@@ -335,7 +335,7 @@ pub enum Command {
     Reload,
 }
 
-/// A chat command without its slash: None when it isn't Biome Compass's,
+/// A chat command without its slash: None when it isn't BiomeCompass's,
 /// else the command or its usage line.
 pub fn parse_command(line: &str) -> Option<Result<Command, String>> {
     let line = line.trim().trim_start_matches('/');
@@ -368,7 +368,7 @@ pub fn parse_command(line: &str) -> Option<Result<Command, String>> {
     })
 }
 
-/// Whether a chat command is Biome Compass's.
+/// Whether a chat command is BiomeCompass's.
 pub fn is_command(line: &str) -> bool {
     parse_command(line).is_some()
 }
@@ -376,7 +376,7 @@ pub fn is_command(line: &str) -> bool {
 /// The help lines.
 pub fn help() -> Vec<String> {
     vec![
-        format!("Biome Compass {VERSION}: find the nearest biome of a kind."),
+        format!("BiomeCompass {VERSION}: find the nearest biome of a kind."),
         format!("/{COMMAND} list [filter]: this dimension's biomes; click one to search."),
         format!(
             "/{COMMAND} find <biome or #tag>: search around you (cherry_grove, \"cherry grove\", #is_forest)."
@@ -895,17 +895,17 @@ pub fn needle(
 
 pub fn started_message(label: &str, radius: u32, dimension: &str) -> String {
     format!(
-        "Biome Compass: searching for {label} within {radius} blocks of you in {}...",
+        "BiomeCompass: searching for {label} within {radius} blocks of you in {}...",
         dimension_name(dimension)
     )
 }
 
 pub fn progress_message(label: &str, searched: u32, radius: u32) -> String {
-    format!("Biome Compass: still searching for {label}: {searched} of {radius} blocks done.")
+    format!("BiomeCompass: still searching for {label}: {searched} of {radius} blocks done.")
 }
 
 pub fn missing_message(label: &str, radius: u32) -> String {
-    format!("Biome Compass: no {label} within {radius} blocks.")
+    format!("BiomeCompass: no {label} within {radius} blocks.")
 }
 
 /// The words before and after the found position's coordinates.
@@ -919,7 +919,7 @@ pub fn found_message(name: &str, label: &str, pos: Position, from: [f64; 2]) -> 
         name.to_owned()
     };
     (
-        format!("Biome Compass: found {what} at "),
+        format!("BiomeCompass: found {what} at "),
         format!(", {d} blocks {point}."),
     )
 }
@@ -928,12 +928,12 @@ pub fn found_message(name: &str, label: &str, pos: Position, from: [f64; 2]) -> 
 pub fn status_message(track: Option<&Track>, from: [f64; 2], dimension: &str) -> String {
     let Some(track) = track else {
         return format!(
-            "Biome Compass: no search. Try /{COMMAND} list, then /{COMMAND} find <biome>."
+            "BiomeCompass: no search. Try /{COMMAND} list, then /{COMMAND} find <biome>."
         );
     };
     match &track.phase {
         Phase::Searching { progress, radius } => format!(
-            "Biome Compass: searching for {}: {}% of {radius} blocks.",
+            "BiomeCompass: searching for {}: {}% of {radius} blocks.",
             track.label,
             (progress * 100.0).floor() as u32
         ),
@@ -941,7 +941,7 @@ pub fn status_message(track: Option<&Track>, from: [f64; 2], dimension: &str) ->
         Phase::Found { name, pos } if track.dimension == dimension => {
             let there = centre(*pos);
             format!(
-                "Biome Compass: {name} at {} {} {}, {} blocks {}.",
+                "BiomeCompass: {name} at {} {} {}, {} blocks {}.",
                 pos[0],
                 pos[1],
                 pos[2],
@@ -950,7 +950,7 @@ pub fn status_message(track: Option<&Track>, from: [f64; 2], dimension: &str) ->
             )
         }
         Phase::Found { name, pos } => format!(
-            "Biome Compass: {name} at {} {} {} in {}.",
+            "BiomeCompass: {name} at {} {} {} in {}.",
             pos[0],
             pos[1],
             pos[2],
@@ -1423,16 +1423,16 @@ mod tests {
     fn chat_lines() {
         let (before, after) =
             found_message("Cherry Grove", "Cherry Grove", [300, 90, -400], [0.5, 0.5]);
-        assert_eq!(before, "Biome Compass: found Cherry Grove at ");
+        assert_eq!(before, "BiomeCompass: found Cherry Grove at ");
         assert_eq!(after, ", 500 blocks NE.");
         let (before, _) = found_message("Forest", "#minecraft:is_forest", [0, 0, 0], [0.0, 0.0]);
         assert_eq!(
             before,
-            "Biome Compass: found Forest (#minecraft:is_forest) at "
+            "BiomeCompass: found Forest (#minecraft:is_forest) at "
         );
         assert_eq!(
             started_message("Desert", 6400, "minecraft:overworld"),
-            "Biome Compass: searching for Desert within 6400 blocks of you in the Overworld..."
+            "BiomeCompass: searching for Desert within 6400 blocks of you in the Overworld..."
         );
         assert!(status_message(None, [0.0, 0.0], "minecraft:overworld").contains("no search"));
         let found = Track {
@@ -1445,11 +1445,11 @@ mod tests {
         };
         assert_eq!(
             status_message(Some(&found), [0.5, 0.5], "minecraft:overworld"),
-            "Biome Compass: Desert at -100 64 0, 100 blocks W."
+            "BiomeCompass: Desert at -100 64 0, 100 blocks W."
         );
         assert_eq!(
             status_message(Some(&found), [0.5, 0.5], "minecraft:the_nether"),
-            "Biome Compass: Desert at -100 64 0 in the Overworld."
+            "BiomeCompass: Desert at -100 64 0 in the Overworld."
         );
     }
 

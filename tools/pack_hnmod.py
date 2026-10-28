@@ -1,4 +1,4 @@
-"""Pack Biome Compass's registry file (.hnmod): horizon-native.json + mixins/biomecompass/*.{rs,toml}.
+"""Pack BiomeCompass's registry file (.hnmod): horizon-native.json + mixins/biomecompass/*.{rs,toml}.
 
 Deterministic: sorted names, no directory entries, deflate, fixed 2026-01-01
 timestamps, Unix 0644. It checks what the registry and the launcher check

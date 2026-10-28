@@ -7,7 +7,7 @@ priority = 150
 
 # Pinned: one hook (marked below) targets a game function that is not a
 # native hook point, and native.rs calls the game's own internals (the
-# level's world generator, `/tp`, the LAN hub), so Biome Compass builds on
+# level's world generator, `/tp`, the LAN hub), so BiomeCompass builds on
 # this commit only. Its other hooks use only hook points (NATIVE_HOOKS_API 1).
 [compatibility]
 horizon_revision = "142388e1c136e622652ec7505af15d8ad195e041"

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
-description = "Biome Compass: a native Horizon mod that finds the nearest biome of a kind and points the way"
+description = "BiomeCompass: a native Horizon mod that finds the nearest biome of a kind and points the way"
 publish = false
 
 [lib]

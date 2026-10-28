@@ -1,7 +1,7 @@
-# Biome Compass
+# BiomeCompass
 
 A **native** [Horizon](https://github.com/horizon-rust/horizon) mod (a horizon-mixins source bundle, `.hnmod`): ask
-for a biome, and Biome Compass searches the world around you for the nearest one, a little every tick, then a
+for a biome, and BiomeCompass searches the world around you for the nearest one, a little every tick, then a
 needle on your HUD points the way and counts down the distance. Operators can teleport there.
 
 Inspired by Nature's Compass (https://modrinth.com/mod/natures-compass); not affiliated, no code from it. Biome
@@ -80,7 +80,7 @@ answers; walk there with the needle), on an End column with no island, and when 
 
 ## Settings
 
-**Options > Mods > Biome Compass > Settings**. Each button steps through its values; a change is in effect for the
+**Options > Mods > BiomeCompass > Settings**. Each button steps through its values; a change is in effect for the
 next search (the HUD's at once).
 
 | Button | Setting (file) | Default | Values a click steps through |
@@ -97,17 +97,17 @@ next search (the HUD's at once).
 
 A value set by hand in the file between two steps goes to the next step up. The page writes, and the mod reads,
 `horizon-mods/.horizon-mod-data/biomecompass/config.txt` (beside the game's `options.txt`): `key = value` lines, `#`
-comments, written with every setting explained the first time Biome Compass runs. A line it can't read is skipped
+comments, written with every setting explained the first time BiomeCompass runs. A line it can't read is skipped
 (logged, and listed by `/biomecompass reload`) and that setting keeps its default. A dedicated server has no settings
 page: edit the file in the server folder and run `/biomecompass reload`.
 
-**Options > Mods** also turns Biome Compass off: from then on it does nothing (its commands are unknown, no needle)
+**Options > Mods** also turns BiomeCompass off: from then on it does nothing (its commands are unknown, no needle)
 until the launcher's next build leaves it out. Single player's server thread follows the window's switch.
 
 ## Not in this version
 
 - **No compass item or biome selection screen.** Nature's Compass is an item with its own screens; a native mod
-  can't add an item to Horizon's registries without far more pinned code, so Biome Compass is a command with a
+  can't add an item to Horizon's registries without far more pinned code, so BiomeCompass is a command with a
   clickable list, and the needle is drawn on the HUD (optionally tied to holding the vanilla compass).
 - **No needle toward the world spawn** when nothing is searched: the vanilla compass already does that.
 - **No biome blacklist**: every biome of the dimension can be searched.
@@ -117,7 +117,7 @@ until the launcher's next build leaves it out. Single player's server thread fol
 ## Compatibility
 
 Horizon's native mods can use **hook points** (`game/native_hooks.rs`, `NATIVE_HOOKS_API` 1): functions kept stable
-from release to release. Biome Compass uses them for everything they cover:
+from release to release. BiomeCompass uses them for everything they cover:
 
 - `native_command`: `/biomecompass`;
 - `native_tick`: the searches, a slice a tick, and the window passing Options > Mods' on/off to single player's
@@ -136,13 +136,13 @@ One hook has no hook point, so it pins a game function (a cancellable HEAD injec
 The adapter (`native.rs`) also calls game internals that hook points don't offer: the world generator of the
 level in place (`end.locator()`, `VanillaTerrain::noise_biomes`, `ChunkGenerator::lod_surface` for the landing
 height), the data pack's biome tags (`tag_entries`), the game's `/tp` (`run_command`) and the LAN hub for lines to
-guests. So Biome Compass is **pinned**: Horizon `142388e1c136e622652ec7505af15d8ad195e041`, horizon-mixins
+guests. So BiomeCompass is **pinned**: Horizon `142388e1c136e622652ec7505af15d8ad195e041`, horizon-mixins
 `0d6b103c70633d8fd9443d8d0acd3aadaacedb06`, game 26.3, the same pins as TreeFall 0.3.0 and Mason 0.2.0, so the three
 build into one game (checked: `horizon-mixins plan` and `apply` of all three together, 23 injections, 14 modules).
 
 ## Build and try
 
-Biome Compass is a source bundle; the launcher compiles it into a game of its own:
+BiomeCompass is a source bundle; the launcher compiles it into a game of its own:
 
 ```sh
 horizon-launcher native-build C:\Users\degrando\projects\biomecompass --version v0.2.97 --trust-native-code

@@ -1,4 +1,4 @@
-// Biome Compass's adapter to the game (Horizon 142388e1c136e622652ec7505af15d8ad195e041,
+// BiomeCompass's adapter to the game (Horizon 142388e1c136e622652ec7505af15d8ad195e041,
 // see horizon-mixin.toml). Injected as `crate::game::biomecompass_native`; it binds
 // the game-independent search in `crate::game::biomecompass` (runtime.rs) to the
 // game that simulates the world (in-frame single player, single player's server
@@ -87,7 +87,7 @@ fn read_config(game: &Game<'_>) -> (Config, Vec<String>) {
         Some(text) => {
             let (config, problems) = Config::parse(&text);
             for p in &problems {
-                log::warn!("Biome Compass: {}: {p}", bc::CONFIG_FILE);
+                log::warn!("BiomeCompass: {}: {p}", bc::CONFIG_FILE);
             }
             (config, problems)
         }
@@ -113,7 +113,7 @@ fn publish(config: Config) {
     shared(|s| s.config = Some(config));
 }
 
-/// Biome Compass isn't turned off in Options > Mods. Every hook but the
+/// BiomeCompass isn't turned off in Options > Mods. Every hook but the
 /// list and the settings page does nothing when it is (until the
 /// launcher's next build leaves it out).
 fn on(game: &Game<'_>) -> bool {
@@ -223,7 +223,7 @@ fn biome_link(entry: &Entry) -> Text {
 }
 
 impl Game<'_> {
-    /// The player acting now, as Biome Compass knows them: UUID, block
+    /// The player acting now, as BiomeCompass knows them: UUID, block
     /// position and dimension. None without one (a server's console). A
     /// guest's level is in place while they act.
     fn bc_player(&mut self) -> Option<(Actor, Position, &'static str)> {
@@ -297,7 +297,7 @@ impl Game<'_> {
             .collect()
     }
 
-    /// `native_command` (a hook point): Biome Compass's commands, as the
+    /// `native_command` (a hook point): BiomeCompass's commands, as the
     /// player who typed them; false leaves the line to the game. A window
     /// joined to a server (single player's own server thread included)
     /// passes it on: the server runs it.
@@ -324,7 +324,7 @@ impl Game<'_> {
             Command::Reload => {
                 if self.ui.registries.permission < bc::OPERATOR {
                     self.command_failure(Text::literal(format!(
-                        "Biome Compass reload needs permission level {}",
+                        "BiomeCompass reload needs permission level {}",
                         bc::OPERATOR
                     )));
                     return true;
@@ -332,10 +332,10 @@ impl Game<'_> {
                 let (config, problems) = read_config(self);
                 publish(config);
                 let line = if problems.is_empty() {
-                    format!("Biome Compass: {} read again", bc::CONFIG_FILE)
+                    format!("BiomeCompass: {} read again", bc::CONFIG_FILE)
                 } else {
                     format!(
-                        "Biome Compass: {} read again; skipped: {}",
+                        "BiomeCompass: {} read again; skipped: {}",
                         bc::CONFIG_FILE,
                         problems.join("; ")
                     )
@@ -380,13 +380,13 @@ impl Game<'_> {
     fn bc_find(&mut self, query: &str) {
         let Some((actor, origin, dimension)) = self.bc_player() else {
             self.command_failure(Text::literal(
-                "Biome Compass searches around a player in a world",
+                "BiomeCompass searches around a player in a world",
             ));
             return;
         };
         let Some(terrain) = self.end.locator() else {
             self.command_failure(Text::literal(
-                "Biome Compass: this world has no world generator to search (a superflat or test world)",
+                "BiomeCompass: this world has no world generator to search (a superflat or test world)",
             ));
             return;
         };
@@ -514,9 +514,9 @@ impl Game<'_> {
         });
         let had = shared(|s| s.tracks.remove(&actor)).is_some();
         let line = if had {
-            "Biome Compass: stopped; the needle is put away"
+            "BiomeCompass: stopped; the needle is put away"
         } else {
-            "Biome Compass: nothing to stop"
+            "BiomeCompass: nothing to stop"
         };
         self.system_message(Text::literal(line));
     }
@@ -546,19 +546,19 @@ impl Game<'_> {
         let config = config(self);
         if config.teleport == Teleport::Off {
             self.command_failure(Text::literal(
-                "Biome Compass: teleporting is turned off in its settings",
+                "BiomeCompass: teleporting is turned off in its settings",
             ));
             return;
         }
         if self.ui.registries.permission < bc::OPERATOR {
             self.command_failure(Text::literal(format!(
-                "Biome Compass: teleporting needs permission level {} (operators)",
+                "BiomeCompass: teleporting needs permission level {} (operators)",
                 bc::OPERATOR
             )));
             return;
         }
         let Some((actor, _, dimension)) = self.bc_player() else {
-            self.command_failure(Text::literal("Biome Compass teleports a player in a world"));
+            self.command_failure(Text::literal("BiomeCompass teleports a player in a world"));
             return;
         };
         let track = shared(|s| s.tracks.get(&actor).cloned());
@@ -569,20 +569,20 @@ impl Game<'_> {
         }) = track
         else {
             self.command_failure(Text::literal(
-                "Biome Compass: nothing found yet to teleport to",
+                "BiomeCompass: nothing found yet to teleport to",
             ));
             return;
         };
         if there != dimension {
             self.command_failure(Text::literal(format!(
-                "Biome Compass: the biome is in {}",
+                "BiomeCompass: the biome is in {}",
                 bc::dimension_name(&there)
             )));
             return;
         }
         if dimension == "minecraft:the_nether" {
             self.command_failure(Text::literal(
-                "Biome Compass doesn't teleport in the Nether (no safe height to land at); follow the needle",
+                "BiomeCompass doesn't teleport in the Nether (no safe height to land at); follow the needle",
             ));
             return;
         }
@@ -591,7 +591,7 @@ impl Game<'_> {
         };
         let Some(y) = self.bc_landing(&terrain, pos[0], pos[2]) else {
             self.command_failure(Text::literal(
-                "Biome Compass: no ground there to land on; follow the needle",
+                "BiomeCompass: no ground there to land on; follow the needle",
             ));
             return;
         };
