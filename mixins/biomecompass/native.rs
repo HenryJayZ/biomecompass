@@ -30,7 +30,6 @@ use horizon_client::lan::playerdata::uuid_ints;
 use horizon_client::streaming::ChunkGenerator;
 use horizon_client::text::{self, ClickEvent, Style, Text};
 use horizon_client::vanillagen::VanillaTerrain;
-use horizon_client::{boss_overlay, debug_overlay};
 use horizon_protocol::packets::play::{self, Clientbound as C};
 use horizon_world::nbt::Tag;
 use std::cell::RefCell;
@@ -632,7 +631,7 @@ impl Game<'_> {
     /// Compasses. The window's game notes Options > Mods' on/off for single
     /// player's server thread, and draws only (unless in-frame).
     pub(super) fn biomecompass_tick(&mut self) {
-        bc::set_client_thread(self.remote.is_some());
+        bc::set_client_thread(self.bc_foreign_client());
         if !on(self) || self.remote.is_some() {
             return;
         }
@@ -985,12 +984,27 @@ impl Game<'_> {
         true
     }
 
-    /// `craft_recipe`'s HEAD (pinned): the window's own crafting grid (the
-    /// game that simulates the world, in-frame) holding the Biome Compass's
-    /// recipe. Its id is `repair_item`, a special recipe: the recipe book
-    /// never learns one, and the grid's remainders are its items' own.
+    /// A client of another computer's server: joined to a server that is
+    /// not this window's own (single player's server thread, or the LAN
+    /// world it hosts, run in this process).
+    fn bc_foreign_client(&self) -> bool {
+        bc::foreign_client(self.remote.is_some(), self.has_singleplayer_server())
+    }
+
+    /// `craft_recipe`'s HEAD (pinned): the window's own crafting grid
+    /// holding the Biome Compass's recipe, in the game that simulates the
+    /// world (in-frame) or in a window whose server is its own (single
+    /// player's server thread, its LAN world), where it shows the result
+    /// that server makes (`Menu::recompute`); a client of another
+    /// computer's server predicts none. Its id is `repair_item`, a special
+    /// recipe: the recipe book never learns one, and the grid's remainders
+    /// are its items' own.
     pub(super) fn biomecompass_craft(&self) -> Option<(String, ItemStack)> {
-        if self.remote.is_some() || !on(self) {
+        let foreign = self.bc_foreign_client();
+        // `item::craft` reads it too (the window's first frames on a server
+        // come before its first tick).
+        bc::set_client_thread(foreign);
+        if foreign || !on(self) {
             return None;
         }
         let n = self.craft_size;
@@ -1007,24 +1021,6 @@ impl Game<'_> {
         self.inventory.get(self.selected).is_some_and(is) || is(&self.offhand)
     }
 
-    /// The debug screen's pixels per GUI pixel (`draw_debug_overlay`'s
-    /// scale: 1, or less under the default debug GUI scale), as LookAt
-    /// measures it.
-    fn bc_f3_ratio(&self, batch: &HudBatch) -> f32 {
-        let framebuffer = self.renderer.as_ref().map_or_else(
-            || [batch.width * batch.scale, batch.height * batch.scale].map(|v| v as i32),
-            |r| [r.config.width, r.config.height].map(|v| v as i32),
-        );
-        let (ratio, _) = debug_overlay::scale(
-            framebuffer,
-            batch.scale as i32,
-            self.settings.file.int("debugGuiScale"),
-            self.settings.force_unicode,
-            [batch.width as i32, batch.height as i32],
-        );
-        ratio
-    }
-
     /// `native_hud` (a hook point): the window's box with the needle and
     /// the biome's name and distance, for its own player's search.
     pub(super) fn biomecompass_hud(&mut self, batch: &mut HudBatch, corners: &mut Corners) {
@@ -1034,7 +1030,7 @@ impl Game<'_> {
         // The search runs where the world is simulated: here in-frame, or
         // single player's server thread in this process. Another computer's
         // server keeps its searches to itself.
-        if self.remote.is_some() && !self.has_singleplayer_server() {
+        if self.bc_foreign_client() {
             return;
         }
         let config = config(self);
@@ -1043,11 +1039,11 @@ impl Game<'_> {
         };
         let place = corner(hud);
         // F3's debug screen has a column in each top corner (this commit's
-        // `native_corner_shown` reports only the left one taken): with it
-        // open, a top-left or top-right box goes to the top centre.
+        // `native_corner_shown` reports only the left one taken), and other
+        // mods' boxes (LookAt's) go between them: with it open, a top-left
+        // or top-right box hides.
         let f3 = !self.native_corner_shown(Corner::TopLeft);
-        let centre = bc::hud_at_top_centre(hud, f3);
-        if !centre && !self.native_corner_shown(place) {
+        if bc::hud_hidden_by_f3(hud, f3) || !self.native_corner_shown(place) {
             return;
         }
         let Some(p) = self.native_player() else {
@@ -1076,20 +1072,7 @@ impl Game<'_> {
             .fold(0.0, f32::max);
         let w = 2.0 + DIAL + 4.0 + text_w + 3.0;
         let h = (DIAL + 4.0).max(10.0 * view.lines.len() as f32 + 4.0);
-        let (x, y) = if centre {
-            // Between F3's columns, under the boss bars; hidden where it
-            // doesn't fit between the columns.
-            if !bc::fits_beside_f3(w, batch.width, self.bc_f3_ratio(batch)) {
-                return;
-            }
-            let bosses = self.boss_overlay.bars(boss_overlay::now_millis()).len();
-            (
-                bc::top_centre_x(batch.width, w),
-                bc::top_centre_y(bosses, batch.height),
-            )
-        } else {
-            corners.place(place, w, h)
-        };
+        let (x, y) = corners.place(place, w, h);
         self.native_fill(batch, [x, y, w, h], 0x7800_0000);
         let (cx, cy) = (x + 2.0 + DIAL / 2.0, y + h / 2.0);
         self.native_fill(batch, [x + 2.0, cy - DIAL / 2.0, DIAL, DIAL], 0x5000_0000);

@@ -19,7 +19,7 @@ pub type Actor = [i32; 4];
 /// The mod's id: its row in Options > Mods and its settings folder
 /// (`horizon-mods/.horizon-mod-data/biomecompass/`).
 pub const ID: &str = "biomecompass";
-pub const VERSION: &str = "0.2.1";
+pub const VERSION: &str = "0.2.2";
 pub const DESCRIPTION: &str = "A craftable Biome Compass: right-click it, pick a biome, and its needle points to the nearest one.";
 /// The settings file, in the mod's settings folder.
 pub const CONFIG_FILE: &str = "config.txt";
@@ -61,12 +61,23 @@ pub fn enabled() -> bool {
 }
 
 thread_local! {
-    /// This thread's game is a client of a server (a window joined to one,
-    /// single player's own server thread included), as its last tick saw.
+    /// This thread's game is a client of another computer's server, as it
+    /// last looked.
     static CLIENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
-/// A client's menu engine only predicts clicks; the server decides what a
-/// crafting grid makes (and one without BiomeCompass makes no Biome Compass).
+/// Whether a game is a client of another computer's server: joined to a
+/// server (`remote`) that isn't its own (`own_server`: single player's
+/// server thread, or the LAN world it hosts, in this process). Its own
+/// server runs this BiomeCompass with the window's settings, so the window
+/// shows what that server's crafting grid makes; another computer's server
+/// may run no BiomeCompass at all, so a client of one predicts no Biome
+/// Compass.
+pub fn foreign_client(remote: bool, own_server: bool) -> bool {
+    remote && !own_server
+}
+/// A client of another computer's server only predicts clicks; that server
+/// decides what a crafting grid makes (and one without BiomeCompass makes no
+/// Biome Compass).
 pub fn set_client_thread(client: bool) {
     CLIENT.with(|c| c.set(client));
 }
@@ -972,60 +983,14 @@ pub fn needle(
 
 // ---- the HUD box beside F3 ----------------------------------------------------
 
-/// Pixels between the box at the top centre and what it keeps clear of: the
-/// screen's top, the boss bars, F3's columns (as `Corners::place` leaves 2
-/// from a corner's edges).
-pub const HUD_GAP: f32 = 2.0;
-
-/// How far, in the debug screen's own pixels, F3's columns reach in from
-/// the left and right edges where a box at the top centre could meet them:
-/// vanilla's longest lines there (`Facing: ...`, the chart keys) are about
-/// 330 wide, a third of its screen at the default debug GUI scale (LookAt's
-/// measure).
-pub const F3_COLUMN: f32 = 340.0;
-
-/// Whether the box goes to the top centre: F3's debug screen (`f3`) has a
-/// column in each top corner, so a top-left or top-right box moves there.
-/// A bottom corner keeps its place.
-pub fn hud_at_top_centre(place: Corner, f3: bool) -> bool {
+/// Whether F3's debug screen (`f3`) hides the box: F3 has a column in each
+/// top corner, and between them, at the top centre, other mods' boxes go
+/// (LookAt's, whose height changes with what you look at, placed without
+/// `Corners`), so a top-left or top-right box hides while F3 is open; the
+/// Biome Compass's needle and the action bar still show the search. A
+/// bottom corner keeps its place.
+pub fn hud_hidden_by_f3(place: Corner, f3: bool) -> bool {
     f3 && matches!(place, Corner::TopLeft | Corner::TopRight)
-}
-
-/// The left of a box `w` wide centred on a screen `screen_w` wide.
-pub fn top_centre_x(screen_w: f32, w: f32) -> f32 {
-    ((screen_w - w) / 2.0).round()
-}
-
-/// The top of the box at the top centre: [`HUD_GAP`] under the boss bars
-/// when `bosses` of them show on a screen `screen_h` high, else
-/// [`HUD_GAP`] from the top.
-pub fn top_centre_y(bosses: usize, screen_h: f32) -> f32 {
-    boss_bars_bottom(bosses, screen_h).map_or(HUD_GAP, |bottom| bottom + HUD_GAP)
-}
-
-/// The bottom of the last boss bar drawn (`BossHealthOverlay`: bars 5
-/// pixels high, 19 apart from y 12, until a third of the screen is
-/// reached); none without bars.
-pub fn boss_bars_bottom(bosses: usize, screen_h: f32) -> Option<f32> {
-    let third = (screen_h as i32 / 3) as f32;
-    let mut y = 12.0;
-    let mut bottom = None;
-    for _ in 0..bosses {
-        bottom = Some(y + 5.0);
-        y += 19.0;
-        if y >= third {
-            break;
-        }
-    }
-    bottom
-}
-
-/// Whether a box `w` wide, at the top centre of a screen `screen_w` GUI
-/// pixels wide, keeps clear of both of F3's columns where the debug screen
-/// draws at `ratio` (its pixels per GUI pixel, `debug_overlay::scale`). A
-/// box that doesn't is hidden while F3 is open.
-pub fn fits_beside_f3(w: f32, screen_w: f32, ratio: f32) -> bool {
-    w <= screen_w - 2.0 * (F3_COLUMN * ratio + HUD_GAP)
 }
 
 // ---- chat lines -------------------------------------------------------------
@@ -1907,50 +1872,32 @@ mod tests {
     }
 
     #[test]
-    fn f3_moves_a_top_box_to_the_top_centre() {
-        assert!(hud_at_top_centre(Corner::TopLeft, true));
-        assert!(hud_at_top_centre(Corner::TopRight, true));
-        assert!(!hud_at_top_centre(Corner::BottomLeft, true));
-        assert!(!hud_at_top_centre(Corner::BottomRight, true));
+    fn only_a_client_of_another_computers_server_predicts_no_compass() {
+        // In-frame (no server to join): the game makes it.
+        assert!(!foreign_client(false, false));
+        // Single player's server thread, or the LAN world this window hosts.
+        assert!(!foreign_client(true, true));
+        // A server on another computer (a LAN host's guest included).
+        assert!(foreign_client(true, false));
+        // The flag is the thread's own.
+        set_client_thread(true);
+        assert!(client_thread());
+        std::thread::spawn(|| assert!(!client_thread()))
+            .join()
+            .unwrap();
+        set_client_thread(false);
+        assert!(!client_thread());
+    }
+
+    #[test]
+    fn f3_hides_a_top_box() {
+        assert!(hud_hidden_by_f3(Corner::TopLeft, true));
+        assert!(hud_hidden_by_f3(Corner::TopRight, true));
+        assert!(!hud_hidden_by_f3(Corner::BottomLeft, true));
+        assert!(!hud_hidden_by_f3(Corner::BottomRight, true));
         for c in Corner::ALL {
-            assert!(!hud_at_top_centre(c, false));
+            assert!(!hud_hidden_by_f3(c, false));
         }
-        assert_eq!(top_centre_x(480.0, 100.0), 190.0);
-        assert_eq!(top_centre_x(427.0, 100.0), 164.0);
-    }
-
-    #[test]
-    fn the_top_centre_box_sits_under_the_boss_bars() {
-        // No bars: 2 from the top.
-        assert_eq!(boss_bars_bottom(0, 240.0), None);
-        assert_eq!(top_centre_y(0, 240.0), HUD_GAP);
-        // One bar at y 12, 5 high; the next 19 lower.
-        assert_eq!(boss_bars_bottom(1, 240.0), Some(17.0));
-        assert_eq!(top_centre_y(1, 240.0), 17.0 + HUD_GAP);
-        assert_eq!(boss_bars_bottom(2, 240.0), Some(36.0));
-        assert_eq!(top_centre_y(2, 240.0), 36.0 + HUD_GAP);
-        // Bars stop at a third of the screen (80): 12, 31, 50, 69, then 88.
-        assert_eq!(boss_bars_bottom(4, 240.0), Some(74.0));
-        assert_eq!(boss_bars_bottom(9, 240.0), boss_bars_bottom(4, 240.0));
-    }
-
-    #[test]
-    fn beside_f3_a_box_too_wide_for_the_gap_hides() {
-        // 1920x1080 at GUI scale 4: 480 wide, F3 at half the scale.
-        let room = 480.0 - 2.0 * (F3_COLUMN * 0.5 + HUD_GAP);
-        assert_eq!(room, 136.0);
-        assert!(fits_beside_f3(120.0, 480.0, 0.5));
-        assert!(fits_beside_f3(room, 480.0, 0.5));
-        assert!(!fits_beside_f3(room + 1.0, 480.0, 0.5));
-        // GUI scale 2 on the same screen: 960 wide, F3 at the GUI's scale.
-        assert!(fits_beside_f3(120.0, 960.0, 1.0));
-        assert!(!fits_beside_f3(120.0, 640.0, 1.0));
-        // A box that fits, centred, stays between the columns.
-        let (screen, ratio, w) = (640.0, 2.0 / 3.0, 140.0);
-        assert!(fits_beside_f3(w, screen, ratio));
-        let left = top_centre_x(screen, w);
-        assert!(left >= F3_COLUMN * ratio);
-        assert!(left + w <= screen - F3_COLUMN * ratio);
     }
 
     #[test]

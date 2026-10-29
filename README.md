@@ -11,12 +11,20 @@ Compass is written from scratch for Horizon, from that mod's public description 
 > **Native mods are not sandboxed.** A native mod is Rust source compiled into your own Horizon game, and runs with
 > your rights. Read the source (`mixins/biomecompass/`) before you build it.
 
-## What's new in 0.2.1
+## What's new in 0.2.2
 
-- **F3 is kept clear.** With the debug screen open, a top-left or top-right HUD box moves to the top centre (F3 has
-  a column in each top corner), as LookAt 0.2.1's does, and hides there if it is too wide to fit between the two
-  columns.
-- **Boss bars.** At the top centre the box sits under the boss bars instead of over them.
+- **The crafting table shows the Biome Compass.** In single player as it starts by default (the window joined to
+  its own server thread) and on a LAN world you host, the result slot now shows the Biome Compass the recipe makes;
+  it used to look empty, though taking from it worked. A client of another computer's server still shows nothing
+  there until that server says so (it may not run BiomeCompass).
+- **F3 and LookAt.** With F3's debug screen open, a top-left or top-right HUD box now hides instead of moving to the
+  top centre, where it overlapped LookAt's box (LookAt goes there with F3 open). The Biome Compass's needle and the
+  action bar over the hotbar still show the search; a bottom box stays where it is.
+
+## What was new in 0.2.1
+
+- With F3 open, a top-left or top-right HUD box moved to the top centre, under the boss bars (replaced in 0.2.2:
+  it hides).
 
 ## The Biome Compass
 
@@ -124,9 +132,11 @@ The HUD box (top right by default) shows:
 - in another dimension than the biome: no needle, and which dimension it is in;
 - when nothing was found: `No Cherry Grove within 6400 blocks`, for 10 seconds.
 
-With F3's debug screen open, a top-left or top-right box moves to the top centre (F3 has a column in each top
-corner), under the boss bars if any show, and hides if it is too wide to fit between F3's two columns (a long biome
-name at a large GUI scale); a bottom box stays where it is. The box hides under F1. With **Only while holding a compass**
+With F3's debug screen open, a top-left or top-right box hides: F3 has a column in each top corner, and the top
+centre between them is where LookAt's box goes with F3 open (a native mod can't tell whether another one is on and
+where its box is, so the two would overlap there). The Biome Compass's needle and the action bar over the hotbar
+still show the search, and the box is back the moment F3 closes. A bottom-left or bottom-right box stays where it is
+with F3 open: choose one to keep the box on screen while debugging. The box hides under F1. With **Only while holding a compass**
 on, it shows only while a compass (a Biome Compass is one) or a recovery compass is in your main hand or off hand.
 **Compass HUD: off** hides it; the Biome Compass then does the pointing alone.
 
@@ -189,12 +199,10 @@ the recipe makes nothing, a Biome Compass is an ordinary compass) until the laun
 
 ## Limits
 
-- **LookAt at the top centre.** With F3 open, LookAt's box and BiomeCompass's both go to the top centre, under the
-  boss bars, and can overlap there: LookAt's box there isn't placed through `Corners` (its height changes with what
-  you look at), so BiomeCompass has no clean way to know it is there and stack under it. Put one of them in a bottom
-  corner (BiomeCompass's Compass HUD: bottom left or bottom right) to keep them apart with F3 open.
-- Beside F3 the box keeps clear of columns as wide as vanilla's longest lines there (about a third of the debug
-  screen, LookAt's measure); a longer line (a very long CPU name, another mod's F3 lines) can still reach it.
+- **No top box with F3 open.** LookAt's box goes to the top centre with F3 open, and isn't placed through `Corners`
+  (its height changes with what you look at), so BiomeCompass has no clean way to know it is there and stack under
+  it; a top-left or top-right box hides while F3 is open instead. Choose a bottom corner (Compass HUD: bottom left
+  or bottom right) to see it while debugging.
 
 ## Compatibility
 
@@ -206,7 +214,8 @@ from release to release. BiomeCompass uses them for everything they cover:
   the window passing Options > Mods' on/off to single player's server thread;
 - `native_hud`: the needle box, drawn with `native_fill` and `native_text` plus `HudBatch::fill_quad` for the needle's
   two triangles, placed with `Corners::place`, and `native_corner_shown` (whether F3 is open: it reports the top
-  left taken then; at this commit it doesn't report F3's right column, so a top-right box checks the top left);
+  left taken then; at this commit it doesn't report F3's right column, so a top-right box checks the top left and
+  hides too);
 - `native_mods`, `native_settings`, `native_settings_click`: the row in Options > Mods and the settings page, with
   `native_setting`/`native_set_setting` for the file and `native_on`/`native_window` for the on/off switch.
 
@@ -216,20 +225,20 @@ Five hooks have no hook point, so they pin game functions (cancellable HEAD inje
 | --- | --- |
 | `lan_actions::Game::guest_command` | Lets a LAN or server guest run `/biomecompass` (and the picker's buttons) where guests may not run commands (a LAN world without Allow Commands hosted in-frame, a dedicated server's non-operators): searching is a survival tool. `native_command` only sees commands that are allowed to run. TreeFall pins the same function for `/treefall`; each takes only its own command. |
 | `potions::Game::use_potion_item` | The right-click. It is the first item use a compass reaches in `use_hand`, once the block aimed at has had its turn, for a guest's `UseItem` as for the window's player in-frame (`use_hand` itself holds a macro, which HEAD refuses). It takes only a Biome Compass. |
-| `Game::craft_recipe` | The recipe on the window's own crafting grid (in-frame). The data pack's recipes are read-only once loaded, so the grid's result is looked up here first. |
-| `menu::Menu::recompute` | The recipe on a crafting table the host's menu engine runs: LAN and server guests', single player's own window's. A client's engine (predicting clicks on a server) leaves it to the server. |
+| `Game::craft_recipe` | The recipe on the window's own crafting grid, whose result slot the window draws from it: in-frame, and in a window joined to its own server (single player's server thread, a LAN world it hosts: `has_singleplayer_server`), where it shows what that server makes. A window joined to another computer's server leaves it to that server. |
+| `menu::Menu::recompute` | The recipe on a crafting table the host's menu engine runs: LAN and server guests', single player's own window's; and the window's own engine predicting its clicks on its own server. A client of another computer's server leaves it to the server. |
 | `lan::hub::Hub::set_mod_commands` | `/biomecompass` and `/bcompass` join the server mods' commands, which the command tree every guest receives lists after vanilla's (`send_commands`, which builds the packet, holds a macro). The game sets them when a hub opens (with the `mods` feature, which the launcher's native build passes). |
 
 The adapter (`native.rs`) also calls game internals that hook points don't offer: the world generator of the
 level in place (`end.locator()`, `VanillaTerrain::noise_biomes`, `ChunkGenerator::lod_surface` for the landing
 height), the data pack's biome tags (`tag_entries`), the game's `/tp` (`run_command`), the LAN hub for lines,
-dialogs and action bars to guests, the players' inventories, and for the HUD box beside F3 the boss bars' count
-(`boss_overlay`, `bars`) and how large F3's columns are against the GUI (`debug_overlay::scale`, the renderer's
-size, `debugGuiScale`, `force_unicode`). So BiomeCompass is **pinned**: Horizon
+dialogs and action bars to guests, the players' inventories, and whether the window's server is its own
+(`has_singleplayer_server`, for the crafting grid and the HUD box). So BiomeCompass is **pinned**: Horizon
 `142388e1c136e622652ec7505af15d8ad195e041`, horizon-mixins `0d6b103c70633d8fd9443d8d0acd3aadaacedb06`, game 26.3,
 the same pins as TreeFall 0.3.0, LookAt 0.2.1 and Mason 0.2.0, so they build into one game (checked for 0.2.1:
 `horizon-mixins plan` and `apply` with the three, 31 injections, 17 modules, and `cargo check -p horizon-client
---features mods` of the applied source).
+--features mods` of the applied source; 0.2.2 likewise with Carry Block 0.1.2, LookAt, TreeFall, EnchantmentHints,
+ItemNew, MouseTricks and SmartF3: 55 injections, 17 modules).
 
 ## Build and try
 
@@ -245,7 +254,7 @@ folder:
 
 ```sh
 mkdir C:\Users\degrando\projects\native-set\biomecompass
-tar -xf C:\Users\degrando\projects\biomecompass\dist\biomecompass-0.2.1.hnmod -C C:\Users\degrando\projects\native-set\biomecompass
+tar -xf C:\Users\degrando\projects\biomecompass\dist\biomecompass-0.2.2.hnmod -C C:\Users\degrando\projects\native-set\biomecompass
 horizon-launcher native-build C:\Users\degrando\projects\native-set --version v0.2.97 --trust-native-code
 ```
 
@@ -273,7 +282,7 @@ cargo test
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 rustfmt --edition 2024 --check mixins/biomecompass/*.rs   # the game-side files too
-python tools/pack_hnmod.py                                 # dist/biomecompass-0.2.1.hnmod
+python tools/pack_hnmod.py                                 # dist/biomecompass-0.2.2.hnmod
 ```
 
 Written with [Claude Code](https://claude.com/claude-code).
