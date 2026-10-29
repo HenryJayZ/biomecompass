@@ -30,6 +30,7 @@ use horizon_client::lan::playerdata::uuid_ints;
 use horizon_client::streaming::ChunkGenerator;
 use horizon_client::text::{self, ClickEvent, Style, Text};
 use horizon_client::vanillagen::VanillaTerrain;
+use horizon_client::{boss_overlay, debug_overlay};
 use horizon_protocol::packets::play::{self, Clientbound as C};
 use horizon_world::nbt::Tag;
 use std::cell::RefCell;
@@ -1006,6 +1007,24 @@ impl Game<'_> {
         self.inventory.get(self.selected).is_some_and(is) || is(&self.offhand)
     }
 
+    /// The debug screen's pixels per GUI pixel (`draw_debug_overlay`'s
+    /// scale: 1, or less under the default debug GUI scale), as LookAt
+    /// measures it.
+    fn bc_f3_ratio(&self, batch: &HudBatch) -> f32 {
+        let framebuffer = self.renderer.as_ref().map_or_else(
+            || [batch.width * batch.scale, batch.height * batch.scale].map(|v| v as i32),
+            |r| [r.config.width, r.config.height].map(|v| v as i32),
+        );
+        let (ratio, _) = debug_overlay::scale(
+            framebuffer,
+            batch.scale as i32,
+            self.settings.file.int("debugGuiScale"),
+            self.settings.force_unicode,
+            [batch.width as i32, batch.height as i32],
+        );
+        ratio
+    }
+
     /// `native_hud` (a hook point): the window's box with the needle and
     /// the biome's name and distance, for its own player's search.
     pub(super) fn biomecompass_hud(&mut self, batch: &mut HudBatch, corners: &mut Corners) {
@@ -1019,10 +1038,16 @@ impl Game<'_> {
             return;
         }
         let config = config(self);
-        let Some(place) = config.hud.map(corner) else {
+        let Some(hud) = config.hud else {
             return;
         };
-        if !self.native_corner_shown(place) {
+        let place = corner(hud);
+        // F3's debug screen has a column in each top corner (this commit's
+        // `native_corner_shown` reports only the left one taken): with it
+        // open, a top-left or top-right box goes to the top centre.
+        let f3 = !self.native_corner_shown(Corner::TopLeft);
+        let centre = bc::hud_at_top_centre(hud, f3);
+        if !centre && !self.native_corner_shown(place) {
             return;
         }
         let Some(p) = self.native_player() else {
@@ -1051,7 +1076,20 @@ impl Game<'_> {
             .fold(0.0, f32::max);
         let w = 2.0 + DIAL + 4.0 + text_w + 3.0;
         let h = (DIAL + 4.0).max(10.0 * view.lines.len() as f32 + 4.0);
-        let (x, y) = corners.place(place, w, h);
+        let (x, y) = if centre {
+            // Between F3's columns, under the boss bars; hidden where it
+            // doesn't fit between the columns.
+            if !bc::fits_beside_f3(w, batch.width, self.bc_f3_ratio(batch)) {
+                return;
+            }
+            let bosses = self.boss_overlay.bars(boss_overlay::now_millis()).len();
+            (
+                bc::top_centre_x(batch.width, w),
+                bc::top_centre_y(bosses, batch.height),
+            )
+        } else {
+            corners.place(place, w, h)
+        };
         self.native_fill(batch, [x, y, w, h], 0x7800_0000);
         let (cx, cy) = (x + 2.0 + DIAL / 2.0, y + h / 2.0);
         self.native_fill(batch, [x + 2.0, cy - DIAL / 2.0, DIAL, DIAL], 0x5000_0000);

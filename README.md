@@ -11,6 +11,13 @@ Compass is written from scratch for Horizon, from that mod's public description 
 > **Native mods are not sandboxed.** A native mod is Rust source compiled into your own Horizon game, and runs with
 > your rights. Read the source (`mixins/biomecompass/`) before you build it.
 
+## What's new in 0.2.1
+
+- **F3 is kept clear.** With the debug screen open, a top-left or top-right HUD box moves to the top centre (F3 has
+  a column in each top corner), as LookAt 0.2.1's does, and hides there if it is too wide to fit between the two
+  columns.
+- **Boss bars.** At the top centre the box sits under the boss bars instead of over them.
+
 ## The Biome Compass
 
 ### Crafting
@@ -117,7 +124,9 @@ The HUD box (top right by default) shows:
 - in another dimension than the biome: no needle, and which dimension it is in;
 - when nothing was found: `No Cherry Grove within 6400 blocks`, for 10 seconds.
 
-The box gives way to F3's debug screen in the top left, and hides under F1. With **Only while holding a compass**
+With F3's debug screen open, a top-left or top-right box moves to the top centre (F3 has a column in each top
+corner), under the boss bars if any show, and hides if it is too wide to fit between F3's two columns (a long biome
+name at a large GUI scale); a bottom box stays where it is. The box hides under F1. With **Only while holding a compass**
 on, it shows only while a compass (a Biome Compass is one) or a recovery compass is in your main hand or off hand.
 **Compass HUD: off** hides it; the Biome Compass then does the pointing alone.
 
@@ -178,6 +187,15 @@ the recipe makes nothing, a Biome Compass is an ordinary compass) until the laun
 - **No biome blacklist**: every biome of the dimension can be searched.
 - **No teleport in the Nether** (see above).
 
+## Limits
+
+- **LookAt at the top centre.** With F3 open, LookAt's box and BiomeCompass's both go to the top centre, under the
+  boss bars, and can overlap there: LookAt's box there isn't placed through `Corners` (its height changes with what
+  you look at), so BiomeCompass has no clean way to know it is there and stack under it. Put one of them in a bottom
+  corner (BiomeCompass's Compass HUD: bottom left or bottom right) to keep them apart with F3 open.
+- Beside F3 the box keeps clear of columns as wide as vanilla's longest lines there (about a third of the debug
+  screen, LookAt's measure); a longer line (a very long CPU name, another mod's F3 lines) can still reach it.
+
 ## Compatibility
 
 Horizon's native mods can use **hook points** (`game/native_hooks.rs`, `NATIVE_HOOKS_API` 1): functions kept stable
@@ -187,7 +205,8 @@ from release to release. BiomeCompass uses them for everything they cover:
 - `native_tick`: the searches, a slice a tick; the pickers; the Biome Compasses and the action bar every 5 ticks; and
   the window passing Options > Mods' on/off to single player's server thread;
 - `native_hud`: the needle box, drawn with `native_fill` and `native_text` plus `HudBatch::fill_quad` for the needle's
-  two triangles, placed with `Corners::place`, skipping a corner `native_corner_shown` says is taken;
+  two triangles, placed with `Corners::place`, and `native_corner_shown` (whether F3 is open: it reports the top
+  left taken then; at this commit it doesn't report F3's right column, so a top-right box checks the top left);
 - `native_mods`, `native_settings`, `native_settings_click`: the row in Options > Mods and the settings page, with
   `native_setting`/`native_set_setting` for the file and `native_on`/`native_window` for the on/off switch.
 
@@ -204,10 +223,13 @@ Five hooks have no hook point, so they pin game functions (cancellable HEAD inje
 The adapter (`native.rs`) also calls game internals that hook points don't offer: the world generator of the
 level in place (`end.locator()`, `VanillaTerrain::noise_biomes`, `ChunkGenerator::lod_surface` for the landing
 height), the data pack's biome tags (`tag_entries`), the game's `/tp` (`run_command`), the LAN hub for lines,
-dialogs and action bars to guests, and the players' inventories. So BiomeCompass is **pinned**: Horizon
+dialogs and action bars to guests, the players' inventories, and for the HUD box beside F3 the boss bars' count
+(`boss_overlay`, `bars`) and how large F3's columns are against the GUI (`debug_overlay::scale`, the renderer's
+size, `debugGuiScale`, `force_unicode`). So BiomeCompass is **pinned**: Horizon
 `142388e1c136e622652ec7505af15d8ad195e041`, horizon-mixins `0d6b103c70633d8fd9443d8d0acd3aadaacedb06`, game 26.3,
-the same pins as TreeFall 0.3.0, LookAt and Mason 0.2.0, so they build into one game (checked: `horizon-mixins plan`
-and `apply` with TreeFall and LookAt, 24 injections, 7 modules; `plan` with Mason as well, 31 injections).
+the same pins as TreeFall 0.3.0, LookAt 0.2.1 and Mason 0.2.0, so they build into one game (checked for 0.2.1:
+`horizon-mixins plan` and `apply` with the three, 31 injections, 17 modules, and `cargo check -p horizon-client
+--features mods` of the applied source).
 
 ## Build and try
 
@@ -223,7 +245,7 @@ folder:
 
 ```sh
 mkdir C:\Users\degrando\projects\native-set\biomecompass
-tar -xf C:\Users\degrando\projects\biomecompass\dist\biomecompass-0.2.0.hnmod -C C:\Users\degrando\projects\native-set\biomecompass
+tar -xf C:\Users\degrando\projects\biomecompass\dist\biomecompass-0.2.1.hnmod -C C:\Users\degrando\projects\native-set\biomecompass
 horizon-launcher native-build C:\Users\degrando\projects\native-set --version v0.2.97 --trust-native-code
 ```
 
@@ -251,7 +273,7 @@ cargo test
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 rustfmt --edition 2024 --check mixins/biomecompass/*.rs   # the game-side files too
-python tools/pack_hnmod.py                                 # dist/biomecompass-0.2.0.hnmod
+python tools/pack_hnmod.py                                 # dist/biomecompass-0.2.1.hnmod
 ```
 
 Written with [Claude Code](https://claude.com/claude-code).
