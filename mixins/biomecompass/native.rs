@@ -1,8 +1,15 @@
 // BiomeCompass's adapter to the game (Horizon 142388e1c136e622652ec7505af15d8ad195e041,
 // see horizon-mixin.toml). Injected as `crate::game::biomecompass_native`; it binds
-// the game-independent search in `crate::game::biomecompass` (runtime.rs) to the
+// the game-independent search in `horizon_client::biomecompass` (runtime.rs) and
+// the Biome Compass item (`horizon_client::biomecompass_item`, item.rs) to the
 // game that simulates the world (in-frame single player, single player's server
 // thread, a LAN host, a dedicated server), and draws the needle in the window.
+//
+// The Biome Compass is the server's: a right-click (`use_potion_item`'s HEAD,
+// the first item use a compass reaches) opens the picker, a vanilla dialog the
+// server sends; its buttons run `/biomecompass` as the player; every few ticks
+// the server sets the compasses in each player's inventory to their search
+// (vanilla's lodestone tracker), so any client draws the needle.
 //
 // Biomes come from the world generator of the level in place
 // (`end.locator()`, the `VanillaTerrain` behind `/locate biome`), sampled with
@@ -10,17 +17,21 @@
 // no chunk to be generated or loaded. A search keeps that generator, so a
 // player who changes dimension mid-search doesn't change what it searches.
 use super::Game;
-use super::biomecompass::{
+use horizon_client::biomecompass::{
     self as bc, Actor, Click, Command, Config, Entry, Heights, Needle, Phase, Position, Resolved,
     Search, Spec, Teleport, Track, Viewer,
 };
+use horizon_client::biomecompass_item as item;
 use horizon_client::extras::Corner;
 use horizon_client::extras_hud::Corners;
 use horizon_client::hud::{HudBatch, rgba};
+use horizon_client::items::ItemStack;
+use horizon_client::lan::playerdata::uuid_ints;
 use horizon_client::streaming::ChunkGenerator;
 use horizon_client::text::{self, ClickEvent, Style, Text};
 use horizon_client::vanillagen::VanillaTerrain;
 use horizon_protocol::packets::play::{self, Clientbound as C};
+use horizon_world::nbt::Tag;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -64,6 +75,13 @@ struct Engine {
     searches: BTreeMap<Actor, Active>,
     /// Ticks left showing a search that found nothing.
     missing: BTreeMap<Actor, u32>,
+    /// Pickers to send at the next tick (a right-click happens in the
+    /// guest's turn, while the hub that reaches them is out of the game).
+    pickers: Vec<(Actor, Tag)>,
+    /// Ticks since the engine was made.
+    clock: u32,
+    /// When each player last opened the picker with a right-click.
+    used: BTreeMap<Actor, u32>,
 }
 
 thread_local! {
@@ -118,14 +136,18 @@ fn publish(config: Config) {
 /// launcher's next build leaves it out).
 fn on(game: &Game<'_>) -> bool {
     let own = game.native_on(bc::ID);
-    if game.native_window() {
+    let on = if game.native_window() {
         WINDOW.store(if own { WINDOW_ON } else { WINDOW_OFF }, Ordering::Relaxed);
-        return own;
-    }
-    match WINDOW.load(Ordering::Relaxed) {
-        UNSEEN => own,
-        seen => seen == WINDOW_ON,
-    }
+        own
+    } else {
+        match WINDOW.load(Ordering::Relaxed) {
+            UNSEEN => own,
+            seen => seen == WINDOW_ON,
+        }
+    };
+    // For the hooks in the game's library (crafting menu, command tree).
+    bc::set_enabled(on);
+    on
 }
 
 fn corner(c: bc::Corner) -> Corner {
@@ -158,6 +180,9 @@ fn with_engine<T>(game: &mut Game<'_>, f: impl FnOnce(&mut Game<'_>, &mut Engine
             world: game.world_root.clone(),
             searches: BTreeMap::new(),
             missing: BTreeMap::new(),
+            pickers: Vec::new(),
+            clock: 0,
+            used: BTreeMap::new(),
         },
     };
     let out = f(game, &mut engine);
@@ -347,6 +372,8 @@ impl Game<'_> {
             Command::Status => self.bc_status(),
             Command::Stop => self.bc_stop(),
             Command::Teleport => self.bc_teleport(),
+            Command::Pick(filter) => self.bc_pick(filter.as_deref()),
+            Command::Give => self.bc_give(),
         }
         true
     }
@@ -600,9 +627,11 @@ impl Game<'_> {
     }
 
     /// `native_tick` (a hook point): a slice of every search, then the
-    /// lines for players. The window's game notes Options > Mods' on/off for
-    /// single player's server thread, and draws only (unless in-frame).
+    /// lines and pickers for players, and every few ticks their Biome
+    /// Compasses. The window's game notes Options > Mods' on/off for single
+    /// player's server thread, and draws only (unless in-frame).
     pub(super) fn biomecompass_tick(&mut self) {
+        bc::set_client_thread(self.remote.is_some());
         if !on(self) || self.remote.is_some() {
             return;
         }
@@ -614,16 +643,11 @@ impl Game<'_> {
                 s.tracks.clear();
             }
         });
-        let busy = ENGINE.with(|e| {
-            e.borrow().as_ref().is_some_and(|e| {
-                e.world == self.world_root && !(e.searches.is_empty() && e.missing.is_empty())
-            })
-        });
-        if !busy {
-            return;
-        }
         let config = config(self);
-        let lines = with_engine(self, |_, engine| {
+        let (lines, pickers, refresh) = with_engine(self, |_, engine| {
+            engine.clock = engine.clock.wrapping_add(1);
+            let refresh = engine.clock % bc::COMPASS_TICKS == 0;
+            let pickers = std::mem::take(&mut engine.pickers);
             let mut lines: Vec<(Actor, Text)> = Vec::new();
             engine.missing.retain(|actor, left| {
                 *left = left.saturating_sub(1);
@@ -712,11 +736,265 @@ impl Game<'_> {
             for actor in done {
                 engine.searches.remove(&actor);
             }
-            lines
+            (lines, pickers, refresh)
         });
         for (actor, line) in lines {
             tell(self, actor, line);
         }
+        for (actor, dialog) in pickers {
+            self.bc_send_picker(actor, dialog);
+        }
+        if refresh {
+            self.bc_compasses(&config);
+        }
+    }
+
+    /// Every few ticks: each player's Biome Compasses point at their search
+    /// (vanilla's lodestone tracker, which every client draws; their lore
+    /// names it), and a player holding one sees it over the hotbar. The hub
+    /// sends a guest the stacks that changed, as for any change of their
+    /// inventory.
+    fn bc_compasses(&mut self, config: &Config) {
+        if self.lan_acting.is_some() {
+            return;
+        }
+        let tracks = shared(|s| s.tracks.clone());
+        // The window's own player, in-frame (the tick returned already when
+        // the window is a client).
+        if self.native_window() && self.player.is_some() {
+            let me = self.bc_window_actor();
+            let pointing = bc::pointing(tracks.get(&me));
+            let selected = self.selected;
+            let mut held = false;
+            for (i, slot) in self.inventory.iter_mut().enumerate() {
+                if let Some(s) = slot.as_mut().filter(|s| item::is_biome_compass(s)) {
+                    item::point(s, &pointing);
+                    held |= i == selected;
+                }
+            }
+            if let Some(s) = self.offhand.as_mut().filter(|s| item::is_biome_compass(s)) {
+                item::point(s, &pointing);
+                held = true;
+            }
+            if held
+                && config.action_bar
+                && let (Some(track), Some(p)) = (tracks.get(&me), self.native_player())
+            {
+                let viewer = Viewer {
+                    x: p.x,
+                    y: p.y,
+                    z: p.z,
+                    yaw: p.yaw,
+                    dimension: p.dimension.to_owned(),
+                };
+                let (line, rgb) = bc::action_bar(track, &viewer);
+                self.titles
+                    .set_overlay(Text::literal(line).with_color(rgb), false);
+            }
+        }
+        let Some(host) = self.lan.as_mut() else {
+            return;
+        };
+        let mut bars = Vec::new();
+        for g in host.hub.guests.iter_mut().filter(|g| g.placed) {
+            let actor = uuid_ints(g.uuid);
+            let pointing = bc::pointing(tracks.get(&actor));
+            let mut held = false;
+            for (i, slot) in g.inventory.iter_mut().enumerate() {
+                if let Some(s) = slot.as_mut().filter(|s| item::is_biome_compass(s)) {
+                    item::point(s, &pointing);
+                    held |= i == g.selected;
+                }
+            }
+            if let Some(s) = g.offhand.as_mut().filter(|s| item::is_biome_compass(s)) {
+                item::point(s, &pointing);
+                held = true;
+            }
+            if held
+                && config.action_bar
+                && let Some(track) = tracks.get(&actor)
+            {
+                let viewer = Viewer {
+                    x: g.position[0],
+                    y: g.position[1],
+                    z: g.position[2],
+                    yaw: g.yaw,
+                    dimension: g.dimension.clone(),
+                };
+                let (line, rgb) = bc::action_bar(track, &viewer);
+                bars.push((g.conn, Text::literal(line).with_color(rgb)));
+            }
+        }
+        for (conn, bar) in bars {
+            host.hub.send_to(
+                conn,
+                &C::SystemChat(play::SystemChat {
+                    content: horizon_client::lan::data::component_nbt(&bar.component()),
+                    overlay: true,
+                }),
+            );
+        }
+    }
+
+    /// The window's own player acts, in-frame: the window's game simulates
+    /// the world and no guest's turn is on.
+    fn bc_local(&self) -> bool {
+        self.native_window()
+            && self.remote.is_none()
+            && self.lan_acting.is_none()
+            && self.player.is_some()
+    }
+
+    /// The picker for the player acting now (their dimension's biomes, their
+    /// search), its list filtered.
+    fn bc_picker(&mut self, filter: Option<&str>) -> Option<(Actor, Tag)> {
+        let (actor, feet, dimension) = self.bc_player()?;
+        let entries = self.bc_entries();
+        let track = shared(|s| s.tracks.get(&actor).cloned());
+        let from = [f64::from(feet[0]) + 0.5, f64::from(feet[2]) + 0.5];
+        let status = bc::status_line(track.as_ref(), from, dimension);
+        let current = track.as_ref().map(|t| match &t.phase {
+            Phase::Found { name, .. } => name.clone(),
+            _ => t.label.clone(),
+        });
+        let dialog = bc::picker_dialog(&bc::Picker {
+            entries: &entries,
+            filter,
+            dimension,
+            status,
+            current: current.as_deref(),
+        });
+        Some((actor, item::tag(&dialog)))
+    }
+
+    /// The picker as a dialog to a guest (single player's own window is one
+    /// of its server thread's); a player who left gets nothing.
+    fn bc_send_picker(&mut self, actor: Actor, dialog: Tag) {
+        let Some(host) = self.lan.as_mut() else {
+            return;
+        };
+        let to = host
+            .hub
+            .guests
+            .iter()
+            .find(|g| g.placed && uuid_ints(g.uuid) == actor)
+            .map(|g| g.conn);
+        if let Some(conn) = to {
+            host.hub.send_to(
+                conn,
+                &C::ShowDialog(play::ShowDialog {
+                    dialog: play::DialogHolder::Direct(dialog),
+                }),
+            );
+        }
+    }
+
+    /// `/biomecompass pick [filter]`, and a right-click with the Biome
+    /// Compass: the picker. A guest gets the dialog, at once from a command
+    /// (the hub is in place), at the next tick from a right-click (the hub
+    /// is out of the game during the guest's turn). The window's player
+    /// in-frame, whose dialogs reach no server, gets the clickable list in
+    /// chat.
+    fn bc_pick(&mut self, filter: Option<&str>) {
+        if self.bc_local() {
+            self.bc_list(filter);
+            self.bc_stop_line();
+            return;
+        }
+        let Some((actor, dialog)) = self.bc_picker(filter) else {
+            self.command_failure(Text::literal(
+                "BiomeCompass's picker is for a player in a world",
+            ));
+            return;
+        };
+        if self.lan.is_some() {
+            self.bc_send_picker(actor, dialog);
+        } else {
+            with_engine(self, |_, e| e.pickers.push((actor, dialog)));
+        }
+    }
+
+    /// Under the chat picker: a link that stops the search, if one runs.
+    fn bc_stop_line(&mut self) {
+        let Some((actor, ..)) = self.bc_player() else {
+            return;
+        };
+        if !shared(|s| s.tracks.contains_key(&actor)) {
+            return;
+        }
+        let stop = Text::literal("[Stop searching]").with_style(&Style {
+            click: Some(ClickEvent::RunCommand(format!("/{} stop", bc::COMMAND))),
+            hover: Some(Box::new(Text::literal(
+                "The compass points at the world spawn again",
+            ))),
+            ..Style::color(text::RED)
+        });
+        self.system_message(stop);
+    }
+
+    /// `/biomecompass give`: a Biome Compass, for operators and creative
+    /// players (anyone else crafts one).
+    fn bc_give(&mut self) {
+        if self.ui.registries.permission < bc::OPERATOR && !self.creative {
+            self.command_failure(Text::literal(format!(
+                "BiomeCompass give needs permission level {} or creative mode; craft one: {}",
+                bc::OPERATOR,
+                bc::RECIPE_TEXT
+            )));
+            return;
+        }
+        if self.bc_player().is_none() {
+            self.command_failure(Text::literal("BiomeCompass gives to a player in a world"));
+            return;
+        }
+        match self.give(item::new_stack()) {
+            None => self.system_message(Text::literal(format!(
+                "BiomeCompass: here is a {}; right-click it to choose a biome",
+                bc::ITEM_NAME
+            ))),
+            Some(_) => self.command_failure(Text::literal("BiomeCompass: your inventory is full")),
+        }
+    }
+
+    /// `use_potion_item`'s HEAD (pinned): a right-click with the Biome
+    /// Compass opens the picker, in the game that simulates the world, for
+    /// the player acting (a guest's `UseItem`, or the window's player
+    /// in-frame); true when it was one (the click ends there). Held down,
+    /// the click repeats: the picker opens once per `USE_COOLDOWN` ticks.
+    pub(super) fn biomecompass_use(&mut self, stack: &ItemStack) -> bool {
+        if self.remote.is_some() || !item::is_biome_compass(stack) || !on(self) {
+            return false;
+        }
+        let Some((actor, ..)) = self.bc_player() else {
+            return false;
+        };
+        let open = with_engine(self, |_, e| {
+            let ready = e
+                .used
+                .get(&actor)
+                .is_none_or(|t| e.clock.wrapping_sub(*t) >= bc::USE_COOLDOWN);
+            if ready {
+                e.used.insert(actor, e.clock);
+            }
+            ready
+        });
+        if open {
+            self.bc_pick(None);
+        }
+        true
+    }
+
+    /// `craft_recipe`'s HEAD (pinned): the window's own crafting grid (the
+    /// game that simulates the world, in-frame) holding the Biome Compass's
+    /// recipe. Its id is `repair_item`, a special recipe: the recipe book
+    /// never learns one, and the grid's remainders are its items' own.
+    pub(super) fn biomecompass_craft(&self) -> Option<(String, ItemStack)> {
+        if self.remote.is_some() || !on(self) {
+            return None;
+        }
+        let n = self.craft_size;
+        let grid: Vec<Option<ItemStack>> = (0..n * n).map(|i| self.craft_grid[i].clone()).collect();
+        item::craft(&grid, n, self.res.items()).map(|s| ("repair_item".to_owned(), s))
     }
 
     /// Holding a compass in either hand.

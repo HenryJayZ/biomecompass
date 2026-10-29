@@ -1,12 +1,16 @@
-// BiomeCompass: find the nearest biome of a kind, then follow the needle.
+// BiomeCompass: craft a Biome Compass, pick a biome, follow the needle.
 //
 // Original implementation for Horizon (a horizon-mixins native mod). This file is
 // both the standalone, unit-tested Cargo library and the injected
-// `crate::game::biomecompass` module. It has no Horizon dependency: the search
-// only hands out block positions to sample and takes back the biome names the
-// world generator gives for them; `native.rs` asks the game.
+// `horizon_client::biomecompass` module (in the game's library, so that hooks in
+// the library, the crafting menu and the command tree, reach it too). It has no
+// Horizon dependency: the search only hands out block positions to sample and
+// takes back the biome names the world generator gives for them, and the item's
+// components, the recipe and the picker screen are plain values; `native.rs` and
+// `item.rs` turn them into the game's.
 
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub type Position = [i32; 3];
 /// A player's UUID as the game keeps it.
@@ -15,16 +19,14 @@ pub type Actor = [i32; 4];
 /// The mod's id: its row in Options > Mods and its settings folder
 /// (`horizon-mods/.horizon-mod-data/biomecompass/`).
 pub const ID: &str = "biomecompass";
-pub const VERSION: &str = "0.1.0";
-pub const DESCRIPTION: &str =
-    "Finds the nearest biome of the kind you ask for, then a needle on the HUD points the way.";
+pub const VERSION: &str = "0.2.0";
+pub const DESCRIPTION: &str = "A craftable Biome Compass: right-click it, pick a biome, and its needle points to the nearest one.";
 /// The settings file, in the mod's settings folder.
 pub const CONFIG_FILE: &str = "config.txt";
 /// The chat command (without its slash), and its short form.
 pub const COMMAND: &str = "biomecompass";
 pub const ALIAS: &str = "bcompass";
-pub const USAGE: &str =
-    "Usage: /biomecompass [list [filter]|find <biome or #tag>|status|stop|tp|reload|help]";
+pub const USAGE: &str = "Usage: /biomecompass [pick [filter]|list [filter]|find <biome or #tag>|status|stop|give|tp|reload|help]";
 /// The most of a server tick a search takes, whatever `samples-per-tick`
 /// says (a tick is 50 ms).
 pub const TICK_TIME_MS: u64 = 10;
@@ -40,6 +42,37 @@ pub const MISSING_TICKS: u32 = 200;
 pub const OPERATOR: u8 = 2;
 /// Items that show the needle when `hud-needs-compass` is on.
 pub const COMPASSES: [&str; 2] = ["minecraft:compass", "minecraft:recovery_compass"];
+/// How often the Biome Compasses in players' inventories are brought up to
+/// date (their needle, their lore) and the action bar shown (ticks).
+pub const COMPASS_TICKS: u32 = 5;
+/// Ticks between two right-clicks that open the picker (holding the button
+/// down repeats the click every 4 ticks).
+pub const USE_COOLDOWN: u32 = 10;
+
+/// BiomeCompass is on in Options > Mods, as the game last saw it. The hooks
+/// in the game's library (the crafting menu, the command tree) have no game
+/// to ask; the game's own hooks keep this up to date.
+static ENABLED: AtomicBool = AtomicBool::new(true);
+pub fn set_enabled(on: bool) {
+    ENABLED.store(on, Ordering::Relaxed);
+}
+pub fn enabled() -> bool {
+    ENABLED.load(Ordering::Relaxed)
+}
+
+thread_local! {
+    /// This thread's game is a client of a server (a window joined to one,
+    /// single player's own server thread included), as its last tick saw.
+    static CLIENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+/// A client's menu engine only predicts clicks; the server decides what a
+/// crafting grid makes (and one without BiomeCompass makes no Biome Compass).
+pub fn set_client_thread(client: bool) {
+    CLIENT.with(|c| c.set(client));
+}
+pub fn client_thread() -> bool {
+    CLIENT.with(|c| c.get())
+}
 
 // ---- settings ------------------------------------------------------------
 
@@ -106,6 +139,9 @@ pub struct Config {
     pub hud: Option<Corner>,
     /// The HUD shows the needle only while a compass is in either hand.
     pub hud_needs_compass: bool,
+    /// The action bar shows the biome and its distance while a Biome
+    /// Compass is in either hand.
+    pub action_bar: bool,
     pub teleport: Teleport,
 }
 impl Default for Config {
@@ -117,6 +153,7 @@ impl Default for Config {
             heights: Heights::All,
             hud: Some(Corner::TopRight),
             hud_needs_compass: false,
+            action_bar: true,
             teleport: Teleport::Operators,
         }
     }
@@ -182,6 +219,7 @@ impl Config {
                 }
                 .map(|v| c.hud = v),
                 "hud-needs-compass" => parse_bool(&value).map(|v| c.hud_needs_compass = v),
+                "action-bar" => parse_bool(&value).map(|v| c.action_bar = v),
                 "teleport" => match value.as_str() {
                     "operators" => Some(Teleport::Operators),
                     "off" => Some(Teleport::Off),
@@ -230,6 +268,9 @@ impl Config {
              hud = {hud}\n\
              # true: the needle shows only while you hold a compass.\n\
              hud-needs-compass = {}\n\
+             # true: the biome and its distance show over the hotbar while you\n\
+             # hold a Biome Compass.\n\
+             action-bar = {}\n\
              # operators (permission level {}) or off.\n\
              teleport = {teleport}\n",
             RADIUS_RANGE.0,
@@ -244,6 +285,7 @@ impl Config {
             self.samples_per_tick,
             LAYER_STEP,
             self.hud_needs_compass,
+            self.action_bar,
             OPERATOR,
         )
     }
@@ -263,6 +305,10 @@ impl Config {
             format!(
                 "Only while holding a compass: {}",
                 on_off(self.hud_needs_compass)
+            ),
+            format!(
+                "Action bar while holding the Biome Compass: {}",
+                on_off(self.action_bar)
             ),
             match self.teleport {
                 Teleport::Operators => "Teleport (/biomecompass tp): operators".to_owned(),
@@ -307,14 +353,15 @@ pub fn click(config: &Config, button: usize) -> Option<Click> {
             }
         }
         5 => c.hud_needs_compass = !c.hud_needs_compass,
-        6 => {
+        6 => c.action_bar = !c.action_bar,
+        7 => {
             c.teleport = match c.teleport {
                 Teleport::Operators => Teleport::Off,
                 Teleport::Off => Teleport::Operators,
             }
         }
-        7 => c = Config::default(),
-        8 => return Some(Click::Reload),
+        8 => c = Config::default(),
+        9 => return Some(Click::Reload),
         _ => return None,
     }
     Some(Click::Save(c))
@@ -333,6 +380,10 @@ pub enum Command {
     Stop,
     Teleport,
     Reload,
+    /// The biome picker (the Biome Compass's screen), its list filtered.
+    Pick(Option<String>),
+    /// A Biome Compass (operators, or creative).
+    Give,
 }
 
 /// A chat command without its slash: None when it isn't BiomeCompass's,
@@ -364,8 +415,33 @@ pub fn parse_command(line: &str) -> Option<Result<Command, String>> {
         Some("stop" | "cancel" | "clear") => alone(Command::Stop),
         Some("tp" | "teleport") => alone(Command::Teleport),
         Some("reload") => alone(Command::Reload),
+        Some("pick" | "menu" | "choose") => Ok(Command::Pick(unquote(&rest))),
+        Some("give") => alone(Command::Give),
         Some(_) => Err(USAGE.to_owned()),
     })
+}
+
+/// A filter as the picker's search button sends it: in double quotes (a
+/// quoted phrase, so an empty filter still parses), with `"`, `'` and `\`
+/// escaped by a backslash; or bare, as typed. None when empty.
+pub fn unquote(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    let inner = match raw.strip_prefix('"').and_then(|r| r.strip_suffix('"')) {
+        Some(inner) => {
+            let mut out = String::new();
+            let mut chars = inner.chars();
+            while let Some(c) = chars.next() {
+                match c {
+                    '\\' => out.extend(chars.next()),
+                    c => out.push(c),
+                }
+            }
+            out
+        }
+        None => raw.to_owned(),
+    };
+    let inner = inner.trim();
+    (!inner.is_empty()).then(|| inner.to_owned())
 }
 
 /// Whether a chat command is BiomeCompass's.
@@ -377,12 +453,15 @@ pub fn is_command(line: &str) -> bool {
 pub fn help() -> Vec<String> {
     vec![
         format!("BiomeCompass {VERSION}: find the nearest biome of a kind."),
+        format!("Craft a Biome Compass: {RECIPE_TEXT}. Right-click it to pick a biome."),
+        format!("/{COMMAND} pick [filter]: the biome picker, as the Biome Compass opens it."),
         format!("/{COMMAND} list [filter]: this dimension's biomes; click one to search."),
         format!(
             "/{COMMAND} find <biome or #tag>: search around you (cherry_grove, \"cherry grove\", #is_forest)."
         ),
         format!("/{COMMAND} status: how far the search got, or where the biome is."),
         format!("/{COMMAND} stop: stop searching and put the needle away."),
+        format!("/{COMMAND} give: a Biome Compass (operators, or in creative)."),
         format!("/{COMMAND} tp: teleport to the biome found (operators)."),
         format!("/{COMMAND} reload: read {CONFIG_FILE} again (operators)."),
     ]
@@ -959,6 +1038,391 @@ pub fn status_message(track: Option<&Track>, from: [f64; 2], dimension: &str) ->
     }
 }
 
+// ---- the Biome Compass ------------------------------------------------------
+
+/// The item a Biome Compass is: a vanilla compass with BiomeCompass's mark,
+/// so vanilla clients, servers and saves know it as what it is.
+pub const ITEM: &str = "minecraft:compass";
+/// Its name (`minecraft:custom_name` and `minecraft:item_name`; a compass
+/// with a lodestone tracker is named "Lodestone Compass" unless it has a
+/// custom name).
+pub const ITEM_NAME: &str = "Biome Compass";
+/// BiomeCompass's mark: `minecraft:custom_data` `{biomecompass: 1b}`.
+pub const MARK: &str = "biomecompass";
+pub const CUSTOM_DATA: &str = "minecraft:custom_data";
+pub const ITEM_NAME_COMPONENT: &str = "minecraft:item_name";
+pub const LORE: &str = "minecraft:lore";
+pub const TRACKER: &str = "minecraft:lodestone_tracker";
+/// The item tag the recipe takes saplings from.
+pub const SAPLINGS: &str = "minecraft:saplings";
+/// The recipe in words.
+pub const RECIPE_TEXT: &str = "a compass in the middle of a crafting table and a sapling (any kind) on each of its four sides";
+
+/// An NBT value as BiomeCompass writes them; the adapter turns it into the
+/// game's (`item.rs`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Nbt {
+    Byte(i8),
+    Int(i32),
+    String(String),
+    IntArray(Vec<i32>),
+    List(Vec<Nbt>),
+    Compound(Vec<(String, Nbt)>),
+}
+impl Nbt {
+    pub fn compound<const N: usize>(entries: [(&str, Nbt); N]) -> Self {
+        Nbt::Compound(
+            entries
+                .into_iter()
+                .map(|(k, v)| (k.to_owned(), v))
+                .collect(),
+        )
+    }
+    pub fn string(s: impl Into<String>) -> Self {
+        Nbt::String(s.into())
+    }
+    /// A compound's entry.
+    pub fn get(&self, key: &str) -> Option<&Nbt> {
+        match self {
+            Nbt::Compound(entries) => entries.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+            _ => None,
+        }
+    }
+    /// A string's value.
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Nbt::String(s) => Some(s),
+            _ => None,
+        }
+    }
+}
+
+/// A text component: plain text in a colour, not italic (lore is italic
+/// unless it says otherwise).
+fn styled(text: &str, color: &str) -> Nbt {
+    Nbt::compound([
+        ("text", Nbt::string(text)),
+        ("color", Nbt::string(color)),
+        ("italic", Nbt::Byte(0)),
+    ])
+}
+
+/// `minecraft:custom_data` with BiomeCompass's mark.
+pub fn custom_data() -> Nbt {
+    Nbt::compound([(MARK, Nbt::Byte(1))])
+}
+
+/// `minecraft:item_name`.
+pub fn item_name() -> Nbt {
+    Nbt::string(ITEM_NAME)
+}
+
+/// What a player's Biome Compasses point at: their search.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Pointing {
+    /// No search: a plain compass (the world spawn).
+    Idle,
+    /// The needle spins.
+    Searching { label: String },
+    /// The needle points at the biome found.
+    Found {
+        name: String,
+        dimension: String,
+        pos: Position,
+    },
+    /// Nothing found: a plain compass again.
+    Missing { label: String },
+}
+
+/// A player's search as their Biome Compasses show it.
+pub fn pointing(track: Option<&Track>) -> Pointing {
+    let Some(track) = track else {
+        return Pointing::Idle;
+    };
+    match &track.phase {
+        Phase::Searching { .. } => Pointing::Searching {
+            label: track.label.clone(),
+        },
+        Phase::Found { name, pos } => Pointing::Found {
+            name: name.clone(),
+            dimension: track.dimension.clone(),
+            pos: *pos,
+        },
+        Phase::Missing { .. } => Pointing::Missing {
+            label: track.label.clone(),
+        },
+    }
+}
+
+/// `minecraft:lodestone_tracker` for what the compass points at (None: the
+/// component goes, and the compass points at the world spawn).
+/// `tracked: false`: no lodestone is needed at the target, so the game never
+/// takes it away. Without a target the needle spins, as a lodestone
+/// compass's whose lodestone is gone.
+pub fn tracker(pointing: &Pointing) -> Option<Nbt> {
+    match pointing {
+        Pointing::Idle | Pointing::Missing { .. } => None,
+        Pointing::Searching { .. } => Some(Nbt::compound([("tracked", Nbt::Byte(0))])),
+        Pointing::Found { dimension, pos, .. } => Some(Nbt::compound([
+            (
+                "target",
+                Nbt::compound([
+                    ("dimension", Nbt::string(dimension.as_str())),
+                    ("pos", Nbt::IntArray(pos.to_vec())),
+                ]),
+            ),
+            ("tracked", Nbt::Byte(0)),
+        ])),
+    }
+}
+
+/// `minecraft:lore`: how to use it, and what it points at.
+pub fn lore(pointing: &Pointing) -> Nbt {
+    let mut lines = vec![styled("Right-click to choose a biome", "gray")];
+    match pointing {
+        Pointing::Idle => {}
+        Pointing::Searching { label } => {
+            lines.push(styled(&format!("Searching: {label}"), "yellow"));
+        }
+        Pointing::Found {
+            name, dimension, ..
+        } => {
+            lines.push(styled(&format!("Points to: {name}"), "green"));
+            lines.push(styled(
+                &format!("in {}", dimension_name(dimension)),
+                "dark_gray",
+            ));
+        }
+        Pointing::Missing { label } => {
+            lines.push(styled(&format!("No {label} found"), "red"));
+        }
+    }
+    Nbt::List(lines)
+}
+
+/// Whether a stack's components (by component id) are a Biome Compass's:
+/// BiomeCompass's mark, or its item name (a client that never saw the mark,
+/// a creative player's copy, keeps the name; the mark is put back).
+pub fn is_biome_compass(item: &str, component: &dyn Fn(&str) -> Option<Nbt>) -> bool {
+    if item != ITEM {
+        return false;
+    }
+    component(CUSTOM_DATA).is_some_and(|c| c.get(MARK).is_some())
+        || component(ITEM_NAME_COMPONENT) == Some(item_name())
+}
+
+/// The recipe, on a crafting grid of `size` by `size` (row-major item ids):
+/// a 3x3 grid with a compass in the middle, a sapling on each of its four
+/// sides (any kinds, mixed) and the corners empty. Like a vanilla shaped
+/// recipe, any compass will do, a Biome Compass included.
+pub fn recipe_matches(
+    grid: &[Option<&str>],
+    size: usize,
+    is_sapling: &dyn Fn(&str) -> bool,
+) -> bool {
+    if size != 3 || grid.len() != 9 {
+        return false;
+    }
+    grid.iter().enumerate().all(|(i, cell)| match (i, cell) {
+        (4, Some(item)) => *item == ITEM,
+        (1 | 3 | 5 | 7, Some(item)) => is_sapling(item),
+        (0 | 2 | 6 | 8, None) => true,
+        _ => false,
+    })
+}
+
+/// A sapling by its id, for a data pack with no `#minecraft:saplings`.
+pub fn looks_like_sapling(id: &str) -> bool {
+    id.ends_with("_sapling") || id.ends_with("_propagule") || id.ends_with("azalea")
+}
+
+// ---- the biome picker --------------------------------------------------------
+
+/// The picker's text box, and the command its Search button runs (the
+/// filter in double quotes: a quoted phrase, empty or not).
+pub const FILTER_KEY: &str = "filter";
+/// Buttons per row, and their width.
+pub const PICKER_COLUMNS: i32 = 3;
+pub const PICKER_BUTTON: i32 = 120;
+/// The most characters the search box takes; a dialog whose text is longer
+/// than its box allows is refused by a vanilla client (and the connection
+/// with it), so a longer filter is cut.
+pub const FILTER_MAX: usize = 32;
+
+/// What the picker shows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Picker<'a> {
+    /// The dimension's biomes.
+    pub entries: &'a [Entry],
+    pub filter: Option<&'a str>,
+    pub dimension: &'a str,
+    /// The player's search, as `/biomecompass status` says it.
+    pub status: Option<String>,
+    /// The biome (or tag) the player's search is for.
+    pub current: Option<&'a str>,
+}
+
+fn button(label: Nbt, tooltip: Option<&str>, action: Nbt) -> Nbt {
+    let mut entries = vec![
+        ("label".to_owned(), label),
+        ("width".to_owned(), Nbt::Int(PICKER_BUTTON)),
+        ("action".to_owned(), action),
+    ];
+    if let Some(t) = tooltip {
+        entries.push(("tooltip".to_owned(), Nbt::string(t)));
+    }
+    Nbt::Compound(entries)
+}
+
+fn run(command: String) -> Nbt {
+    Nbt::compound([
+        ("type", Nbt::string("minecraft:run_command")),
+        ("command", Nbt::string(command)),
+    ])
+}
+
+/// The biome picker as a vanilla dialog (`minecraft:multi_action`, sent with
+/// `ClientboundShowDialogPacket`): a search box, Search / All / Stop, then a
+/// button per biome matching the filter. Its buttons run BiomeCompass's
+/// commands as the player, as a click in chat does; they are in the command
+/// tree a player receives, so a vanilla client sends them without asking.
+pub fn picker_dialog(p: &Picker) -> Nbt {
+    let shown = filter_entries(p.entries, p.filter);
+    let place = dimension_name(p.dimension);
+    let mut body = vec![];
+    let summary = match p.filter {
+        _ if p.entries.is_empty() => format!("No biome generates in {place}."),
+        Some(f) if shown.is_empty() => format!("No biome of {place} matches \"{f}\"."),
+        Some(f) => format!(
+            "{} of the {} biomes of {place} match \"{f}\". Click one to search for it.",
+            shown.len(),
+            p.entries.len()
+        ),
+        None => format!(
+            "The {} biomes of {place}. Click one to search for the nearest.",
+            shown.len()
+        ),
+    };
+    body.push(Nbt::compound([
+        ("type", Nbt::string("minecraft:plain_message")),
+        ("contents", Nbt::string(summary)),
+        ("width", Nbt::Int(300)),
+    ]));
+    if let Some(status) = &p.status {
+        body.push(Nbt::compound([
+            ("type", Nbt::string("minecraft:plain_message")),
+            ("contents", styled(status, "gray")),
+            ("width", Nbt::Int(300)),
+        ]));
+    }
+    let mut actions = vec![
+        button(
+            Nbt::string("Search"),
+            Some("Show the biomes whose name has the text above"),
+            Nbt::compound([
+                ("type", Nbt::string("minecraft:dynamic/run_command")),
+                (
+                    "template",
+                    Nbt::string(format!("{COMMAND} pick \"$({FILTER_KEY})\"")),
+                ),
+            ]),
+        ),
+        button(
+            Nbt::string("All biomes"),
+            None,
+            run(format!("{COMMAND} pick")),
+        ),
+        button(
+            styled("Stop", "red"),
+            Some("Stop searching; the compass points at the world spawn again"),
+            run(format!("{COMMAND} stop")),
+        ),
+    ];
+    for e in &shown {
+        let label = if p.current == Some(e.name.as_str()) {
+            styled(&e.name, "yellow")
+        } else {
+            Nbt::string(e.name.as_str())
+        };
+        actions.push(button(
+            label,
+            Some(&e.id),
+            run(format!("{COMMAND} find {}", e.id)),
+        ));
+    }
+    Nbt::compound([
+        ("type", Nbt::string("minecraft:multi_action")),
+        ("title", Nbt::string(ITEM_NAME)),
+        ("body", Nbt::List(body)),
+        (
+            "inputs",
+            Nbt::List(vec![Nbt::compound([
+                ("type", Nbt::string("minecraft:text")),
+                ("key", Nbt::string(FILTER_KEY)),
+                ("label", Nbt::string("Biome name")),
+                ("width", Nbt::Int(PICKER_COLUMNS * (PICKER_BUTTON + 2))),
+                (
+                    "initial",
+                    Nbt::string(
+                        p.filter
+                            .unwrap_or_default()
+                            .chars()
+                            .take(FILTER_MAX)
+                            .collect::<String>(),
+                    ),
+                ),
+                ("max_length", Nbt::Int(FILTER_MAX as i32)),
+            ])]),
+        ),
+        ("can_close_with_escape", Nbt::Byte(1)),
+        // Single player's server keeps running behind it.
+        ("pause", Nbt::Byte(0)),
+        ("after_action", Nbt::string("close")),
+        ("actions", Nbt::List(actions)),
+        ("columns", Nbt::Int(PICKER_COLUMNS)),
+        (
+            "exit_action",
+            Nbt::compound([
+                (
+                    "label",
+                    Nbt::compound([("translate", Nbt::string("gui.done"))]),
+                ),
+                ("width", Nbt::Int(200)),
+            ]),
+        ),
+    ])
+}
+
+/// The line over the hotbar while a Biome Compass is held: the search, or
+/// the biome and its distance (and colour).
+pub fn action_bar(track: &Track, viewer: &Viewer) -> (String, u32) {
+    let view = hud_view(track, viewer);
+    let line = |i: usize| view.lines.get(i).map(|l| l.0.clone()).unwrap_or_default();
+    match &track.phase {
+        Phase::Searching { .. } => (format!("{}, {}", line(0), line(1)), WHITE),
+        Phase::Missing { .. } => (format!("{} {}", line(0), line(1)), RED),
+        Phase::Found { .. } => {
+            let rgb = view.lines.get(1).map_or(WHITE, |l| l.1);
+            (format!("{}: {}", line(0), line(1)), rgb)
+        }
+    }
+}
+
+/// `/biomecompass status` without its "BiomeCompass: " (the picker's line).
+pub fn status_line(track: Option<&Track>, from: [f64; 2], dimension: &str) -> Option<String> {
+    let line = status_message(Some(track?), from, dimension);
+    Some(
+        line.strip_prefix("BiomeCompass: ")
+            .map(|rest| {
+                let mut c = rest.chars();
+                c.next()
+                    .map(|f| f.to_uppercase().chain(c).collect())
+                    .unwrap_or_default()
+            })
+            .unwrap_or(line),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1462,6 +1926,7 @@ mod tests {
             heights: Heights::Player,
             hud: Some(Corner::BottomLeft),
             hud_needs_compass: true,
+            action_bar: false,
             teleport: Teleport::Off,
         };
         let (back, problems) = Config::parse(&c.to_file());
@@ -1491,10 +1956,11 @@ mod tests {
     fn settings_page() {
         let c = Config::default();
         let labels = c.labels();
-        assert_eq!(labels.len(), 9);
+        assert_eq!(labels.len(), 10);
         assert_eq!(labels[0], "Search radius: 6400 blocks");
         assert_eq!(labels[4], "Compass HUD: top right");
-        assert_eq!(labels[8], "Read config.txt again");
+        assert_eq!(labels[6], "Action bar while holding the Biome Compass: ON");
+        assert_eq!(labels[9], "Read config.txt again");
         let saved = |b| match click(&c, b) {
             Some(Click::Save(c)) => c,
             other => panic!("{other:?}"),
@@ -1505,9 +1971,10 @@ mod tests {
         assert_eq!(saved(3).heights, Heights::Player);
         assert_eq!(saved(4).hud, Some(Corner::BottomLeft));
         assert!(saved(5).hud_needs_compass);
-        assert_eq!(saved(6).teleport, Teleport::Off);
-        assert_eq!(click(&c, 8), Some(Click::Reload));
-        assert_eq!(click(&c, 9), None);
+        assert!(!saved(6).action_bar);
+        assert_eq!(saved(7).teleport, Teleport::Off);
+        assert_eq!(click(&c, 9), Some(Click::Reload));
+        assert_eq!(click(&c, 10), None);
         // Steps wrap, and a hand-set value goes to the next step up.
         let mut odd = c.clone();
         odd.radius = 50_000;
@@ -1520,7 +1987,7 @@ mod tests {
             panic!()
         };
         assert_eq!(next.spacing, 24);
-        let Some(Click::Save(reset)) = click(&odd, 7) else {
+        let Some(Click::Save(reset)) = click(&odd, 8) else {
             panic!()
         };
         assert_eq!(reset, Config::default());
@@ -1536,5 +2003,318 @@ mod tests {
         }
         assert_eq!(h.hud, c.hud);
         assert!(seen.values().any(Option::is_none));
+    }
+
+    fn sapling(id: &str) -> bool {
+        [
+            "minecraft:oak_sapling",
+            "minecraft:cherry_sapling",
+            "minecraft:mangrove_propagule",
+        ]
+        .contains(&id)
+    }
+
+    #[test]
+    fn the_recipe() {
+        let s = Some("minecraft:oak_sapling");
+        let c = Some(ITEM);
+        let grid = [
+            None,
+            s,
+            None,
+            Some("minecraft:cherry_sapling"),
+            c,
+            s,
+            None,
+            Some("minecraft:mangrove_propagule"),
+            None,
+        ];
+        assert!(recipe_matches(&grid, 3, &sapling));
+        // A corner filled, a side missing, no compass, a log for a sapling.
+        let mut corner = grid;
+        corner[0] = s;
+        assert!(!recipe_matches(&corner, 3, &sapling));
+        let mut side = grid;
+        side[7] = None;
+        assert!(!recipe_matches(&side, 3, &sapling));
+        let mut no_compass = grid;
+        no_compass[4] = Some("minecraft:recovery_compass");
+        assert!(!recipe_matches(&no_compass, 3, &sapling));
+        let mut log = grid;
+        log[1] = Some("minecraft:oak_log");
+        assert!(!recipe_matches(&log, 3, &sapling));
+        // The 2x2 grid can't hold it; a wrong-sized grid is refused.
+        assert!(!recipe_matches(&grid[..4], 2, &sapling));
+        assert!(!recipe_matches(&grid[..8], 3, &sapling));
+        // Without a sapling tag, the ids tell.
+        assert!(looks_like_sapling("minecraft:pale_oak_sapling"));
+        assert!(looks_like_sapling("minecraft:flowering_azalea"));
+        assert!(looks_like_sapling("minecraft:mangrove_propagule"));
+        assert!(!looks_like_sapling("minecraft:oak_log"));
+    }
+
+    fn found(pos: Position) -> Track {
+        Track {
+            label: "Cherry Grove".into(),
+            dimension: "minecraft:overworld".into(),
+            phase: Phase::Found {
+                name: "Cherry Grove".into(),
+                pos,
+            },
+        }
+    }
+
+    #[test]
+    fn the_tracker_component() {
+        assert_eq!(pointing(None), Pointing::Idle);
+        assert_eq!(tracker(&Pointing::Idle), None);
+        let searching = Track {
+            label: "Desert".into(),
+            dimension: "minecraft:overworld".into(),
+            phase: Phase::Searching {
+                progress: 0.5,
+                radius: 6400,
+            },
+        };
+        // Searching: no target, not tracked: the needle spins.
+        assert_eq!(
+            tracker(&pointing(Some(&searching))),
+            Some(Nbt::compound([("tracked", Nbt::Byte(0))]))
+        );
+        let t = tracker(&pointing(Some(&found([300, 90, -400])))).unwrap();
+        let target = t.get("target").unwrap();
+        assert_eq!(
+            target.get("dimension").and_then(Nbt::as_str),
+            Some("minecraft:overworld")
+        );
+        assert_eq!(target.get("pos"), Some(&Nbt::IntArray(vec![300, 90, -400])));
+        assert_eq!(t.get("tracked"), Some(&Nbt::Byte(0)));
+        // Nothing found: a plain compass again.
+        let mut missing = searching.clone();
+        missing.phase = Phase::Missing { radius: 6400 };
+        assert_eq!(tracker(&pointing(Some(&missing))), None);
+    }
+
+    #[test]
+    fn lore_and_mark() {
+        let Nbt::List(idle) = lore(&Pointing::Idle) else {
+            panic!()
+        };
+        assert_eq!(idle.len(), 1);
+        assert_eq!(
+            idle[0].get("text").and_then(Nbt::as_str),
+            Some("Right-click to choose a biome")
+        );
+        assert_eq!(idle[0].get("italic"), Some(&Nbt::Byte(0)));
+        let Nbt::List(lines) = lore(&pointing(Some(&found([0, 64, 0])))) else {
+            panic!()
+        };
+        assert_eq!(
+            lines[1].get("text").and_then(Nbt::as_str),
+            Some("Points to: Cherry Grove")
+        );
+        assert_eq!(
+            lines[2].get("text").and_then(Nbt::as_str),
+            Some("in the Overworld")
+        );
+        let marked = |c: &str| (c == CUSTOM_DATA).then(custom_data);
+        let named = |c: &str| (c == ITEM_NAME_COMPONENT).then(item_name);
+        let plain = |_: &str| None;
+        assert!(is_biome_compass(ITEM, &marked));
+        assert!(is_biome_compass(ITEM, &named));
+        assert!(!is_biome_compass(ITEM, &plain));
+        assert!(!is_biome_compass("minecraft:recovery_compass", &marked));
+        let other_data =
+            |c: &str| (c == CUSTOM_DATA).then(|| Nbt::compound([("someone", Nbt::Byte(1))]));
+        assert!(!is_biome_compass(ITEM, &other_data));
+    }
+
+    /// The buttons of a picker dialog: (label text, command).
+    fn buttons(dialog: &Nbt) -> Vec<(String, String)> {
+        let Some(Nbt::List(actions)) = dialog.get("actions") else {
+            panic!("no actions")
+        };
+        actions
+            .iter()
+            .map(|b| {
+                let label = b.get("label").unwrap();
+                let text = label
+                    .as_str()
+                    .or_else(|| label.get("text").and_then(Nbt::as_str))
+                    .unwrap_or_default()
+                    .to_owned();
+                let action = b.get("action").unwrap();
+                let command = action
+                    .get("command")
+                    .or_else(|| action.get("template"))
+                    .and_then(Nbt::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                (text, command)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_picker_filters() {
+        let e = entries();
+        let picker = |filter| Picker {
+            entries: &e,
+            filter,
+            dimension: "minecraft:overworld",
+            status: None,
+            current: None,
+        };
+        let all = picker_dialog(&picker(None));
+        assert_eq!(
+            all.get("type").and_then(Nbt::as_str),
+            Some("minecraft:multi_action")
+        );
+        assert_eq!(all.get("pause"), Some(&Nbt::Byte(0)));
+        let b = buttons(&all);
+        assert_eq!(b.len(), 3 + 7);
+        assert_eq!(
+            b[0],
+            ("Search".into(), "biomecompass pick \"$(filter)\"".into())
+        );
+        assert_eq!(b[1].1, "biomecompass pick");
+        assert_eq!(b[2], ("Stop".into(), "biomecompass stop".into()));
+        // By name, each a search.
+        assert_eq!(
+            b[3],
+            (
+                "Birch Forest".into(),
+                "biomecompass find minecraft:birch_forest".into()
+            )
+        );
+        let oceans = buttons(&picker_dialog(&picker(Some("ocean"))));
+        let names: Vec<&str> = oceans[3..].iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["Deep Ocean", "Ocean", "Warm Ocean"]);
+        let none = picker_dialog(&picker(Some("lava lake")));
+        assert_eq!(buttons(&none).len(), 3);
+        let Some(Nbt::List(body)) = none.get("body") else {
+            panic!()
+        };
+        assert_eq!(
+            body[0].get("contents").and_then(Nbt::as_str),
+            Some("No biome of the Overworld matches \"lava lake\".")
+        );
+        // The text box keeps the filter.
+        let filtered = picker_dialog(&picker(Some("ocean")));
+        let Some(Nbt::List(inputs)) = filtered.get("inputs") else {
+            panic!()
+        };
+        assert_eq!(inputs[0].get("key").and_then(Nbt::as_str), Some(FILTER_KEY));
+        assert_eq!(
+            inputs[0].get("initial").and_then(Nbt::as_str),
+            Some("ocean")
+        );
+        // A filter longer than the box is cut to fit it.
+        let long = "o".repeat(40);
+        let cut = picker_dialog(&picker(Some(&long)));
+        let Some(Nbt::List(inputs)) = cut.get("inputs") else {
+            panic!()
+        };
+        assert_eq!(
+            inputs[0].get("initial").and_then(Nbt::as_str).map(str::len),
+            Some(FILTER_MAX)
+        );
+        // The biome searched for stands out; the status shows.
+        let mut p = picker(None);
+        p.current = Some("Ocean");
+        p.status = Some("Searching for Ocean: 10% of 6400 blocks.".into());
+        let d = picker_dialog(&p);
+        let Some(Nbt::List(actions)) = d.get("actions") else {
+            panic!()
+        };
+        let ocean = actions
+            .iter()
+            .find(|a| a.get("tooltip").and_then(Nbt::as_str) == Some("minecraft:ocean"))
+            .unwrap();
+        assert_eq!(
+            ocean
+                .get("label")
+                .and_then(|l| l.get("color"))
+                .and_then(Nbt::as_str),
+            Some("yellow")
+        );
+        let Some(Nbt::List(body)) = d.get("body") else {
+            panic!()
+        };
+        assert_eq!(body.len(), 2);
+    }
+
+    #[test]
+    fn picker_commands() {
+        assert_eq!(
+            parse_command("biomecompass pick"),
+            Some(Ok(Command::Pick(None)))
+        );
+        assert_eq!(
+            parse_command("biomecompass pick \"\""),
+            Some(Ok(Command::Pick(None)))
+        );
+        assert_eq!(
+            parse_command("biomecompass pick \"cherry grove\""),
+            Some(Ok(Command::Pick(Some("cherry grove".into()))))
+        );
+        assert_eq!(
+            parse_command("bcompass menu ocean"),
+            Some(Ok(Command::Pick(Some("ocean".into()))))
+        );
+        assert_eq!(unquote(r#""a\"b\\c""#), Some("a\"b\\c".into()));
+        assert_eq!(unquote("  "), None);
+        assert_eq!(parse_command("biomecompass give"), Some(Ok(Command::Give)));
+        assert!(matches!(
+            parse_command("biomecompass give 64"),
+            Some(Err(_))
+        ));
+    }
+
+    #[test]
+    fn the_action_bar() {
+        let t = found([99, 70, 0]);
+        assert_eq!(
+            action_bar(&t, &viewer(0.5, 0.5, 0.0)),
+            ("Cherry Grove: 99 blocks E".into(), YELLOW)
+        );
+        assert_eq!(
+            action_bar(&t, &viewer(99.5, 0.5, 0.0)),
+            ("Cherry Grove: You are there".into(), GREEN)
+        );
+        let mut s = t.clone();
+        s.phase = Phase::Searching {
+            progress: 0.25,
+            radius: 6400,
+        };
+        assert_eq!(
+            action_bar(&s, &viewer(0.0, 0.0, 0.0)).0,
+            "Searching: Cherry Grove, 25% of 6400 blocks"
+        );
+        s.phase = Phase::Missing { radius: 6400 };
+        assert_eq!(
+            action_bar(&s, &viewer(0.0, 0.0, 0.0)),
+            ("No Cherry Grove within 6400 blocks".into(), RED)
+        );
+        assert_eq!(
+            status_line(Some(&t), [0.5, 0.5], "minecraft:overworld"),
+            Some("Cherry Grove at 99 70 0, 99 blocks E.".into())
+        );
+        assert_eq!(status_line(None, [0.5, 0.5], "minecraft:overworld"), None);
+    }
+
+    #[test]
+    fn on_and_off() {
+        assert!(enabled());
+        set_enabled(false);
+        assert!(!enabled());
+        set_enabled(true);
+        assert!(enabled());
+        // Per thread: a window that is a client, beside a server thread.
+        set_client_thread(true);
+        assert!(client_thread());
+        assert!(!std::thread::spawn(client_thread).join().unwrap());
+        set_client_thread(false);
+        assert!(!client_thread());
     }
 }
