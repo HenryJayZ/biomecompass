@@ -1,7 +1,7 @@
-// BiomeCompass's adapter to the game (Horizon 142388e1c136e622652ec7505af15d8ad195e041,
+// BiomeCompass's adapter to the game (Horizon 6475f62f3c834b7489e1816bf47f47ea5eb2b879,
 // see horizon-mixin.toml). Injected as `crate::game::biomecompass_native`; it binds
-// the game-independent search in `horizon_client::biomecompass` (runtime.rs) and
-// the Biome Compass item (`horizon_client::biomecompass_item`, item.rs) to the
+// the game-independent search in `horizon_client_lib::biomecompass_support` (runtime.rs) and
+// the Biome Compass item (`horizon_client_lib::biomecompass_item`, item.rs) to the
 // game that simulates the world (in-frame single player, single player's server
 // thread, a LAN host, a dedicated server), and draws the needle in the window.
 //
@@ -17,11 +17,11 @@
 // no chunk to be generated or loaded. A search keeps that generator, so a
 // player who changes dimension mid-search doesn't change what it searches.
 use super::Game;
-use horizon_client::biomecompass::{
+use horizon_client_lib::biomecompass_support::{
     self as bc, Actor, Click, Command, Config, Entry, Heights, Needle, Phase, Position, Resolved,
     Search, Spec, Teleport, Track, Viewer,
 };
-use horizon_client::biomecompass_item as item;
+use horizon_client_lib::biomecompass_item as item;
 use horizon_client::extras::Corner;
 use horizon_client::extras_hud::Corners;
 use horizon_client::hud::{HudBatch, rgba};

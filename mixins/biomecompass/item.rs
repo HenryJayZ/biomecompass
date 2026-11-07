@@ -1,7 +1,7 @@
 // BiomeCompass's item, recipe and commands on the game's own types (Horizon
-// 142388e1c136e622652ec7505af15d8ad195e041, see horizon-mixin.toml). Injected
-// into the game's library as `horizon_client::biomecompass_item`, beside
-// `horizon_client::biomecompass` (runtime.rs), so the hooks in the library (a
+// 6475f62f3c834b7489e1816bf47f47ea5eb2b879, see horizon-mixin.toml). Injected
+// into the game's library as `horizon_client_lib::biomecompass_item`, beside
+// `horizon_client_lib::biomecompass_support` (runtime.rs), so the hooks in the library (a
 // guest's crafting table, the command tree a player receives) and those in the
 // game (the window's crafting, a right-click, the search) share it.
 //
@@ -9,7 +9,7 @@
 // `minecraft:custom_data`, a name and lore; its needle is vanilla's
 // `minecraft:lodestone_tracker`, which every client already draws. Nothing is
 // added to the game's registries, so vanilla clients, servers and saves read it.
-use crate::biomecompass::{self as bc, Nbt, Pointing};
+use crate::biomecompass_support::{self as bc, Nbt, Pointing};
 use crate::items::{ItemStack, Items};
 use horizon_world::nbt::{JavaString, Tag};
 

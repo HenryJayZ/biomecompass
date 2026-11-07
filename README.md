@@ -11,6 +11,16 @@ Compass is written from scratch for Horizon, from that mod's public description 
 > **Native mods are not sandboxed.** A native mod is Rust source compiled into your own Horizon game, and runs with
 > your rights. Read the source (`mixins/biomecompass/`) before you build it.
 
+## What's new in 0.2.3
+
+- **Horizon Nightly 6475f62 (2026-11-04).** Horizon moved the game's library behind the thin
+  `pub use horizon_client_lib::*` of `horizon-client`'s lib.rs into `horizon_client_lib` (its root:
+  `client_lib.rs`). The two support modules moved there; the search module is now
+  `horizon_client_lib::biomecompass_support` (was `horizon_client::biomecompass`) and the item module
+  `horizon_client_lib::biomecompass_item` (was `horizon_client::biomecompass_item`). The two hooks that
+  name the library's `menu` and `lan` now name `horizon_client_lib::menu::Menu::recompute` and
+  `horizon_client_lib::lan::hub::Hub::set_mod_commands`. No game behaviour changed; the pins did.
+
 ## What's new in 0.2.2
 
 - **The crafting table shows the Biome Compass.** In single player as it starts by default (the window joined to
@@ -234,11 +244,9 @@ level in place (`end.locator()`, `VanillaTerrain::noise_biomes`, `ChunkGenerator
 height), the data pack's biome tags (`tag_entries`), the game's `/tp` (`run_command`), the LAN hub for lines,
 dialogs and action bars to guests, the players' inventories, and whether the window's server is its own
 (`has_singleplayer_server`, for the crafting grid and the HUD box). So BiomeCompass is **pinned**: Horizon
-`142388e1c136e622652ec7505af15d8ad195e041`, horizon-mixins `0d6b103c70633d8fd9443d8d0acd3aadaacedb06`, game 26.3,
-the same pins as TreeFall 0.3.0, LookAt 0.2.1 and Mason 0.2.0, so they build into one game (checked for 0.2.1:
-`horizon-mixins plan` and `apply` with the three, 31 injections, 17 modules, and `cargo check -p horizon-client
---features mods` of the applied source; 0.2.2 likewise with Carry Block 0.1.2, LookAt, TreeFall, EnchantmentHints,
-ItemNew, MouseTricks and SmartF3: 55 injections, 17 modules).
+`6475f62f3c834b7489e1816bf47f47ea5eb2b879`, horizon-mixins `ddd9700b21997c95d95ac6ee5ecafe3830cf622a`, game 26.3
+(0.2.3 verified with `horizon-mixins apply` on that commit: status ok; the pinned predecessors were checked the
+same way; earlier builds checked `cargo check -p horizon-client --features mods` of the applied source as well).
 
 ## Build and try
 
@@ -254,7 +262,7 @@ folder:
 
 ```sh
 mkdir C:\Users\degrando\projects\native-set\biomecompass
-tar -xf C:\Users\degrando\projects\biomecompass\dist\biomecompass-0.2.2.hnmod -C C:\Users\degrando\projects\native-set\biomecompass
+tar -xf C:\Users\degrando\projects\biomecompass\dist\biomecompass-0.2.3.hnmod -C C:\Users\degrando\projects\native-set\biomecompass
 horizon-launcher native-build C:\Users\degrando\projects\native-set --version v0.2.97 --trust-native-code
 ```
 
@@ -268,9 +276,9 @@ Then open a world, type `/biomecompass give` (cheats on) or craft a Biome Compas
 - `runtime.rs`: everything that decides (the ring search, its nearest-sample rule and budget, heights, biome name
   matching, commands, the settings file and page, what the HUD shows and the needle's shape, the chat lines, the
   Biome Compass's components and lodestone tracker, the recipe, the picker dialog, the action bar) as pure code with
-  unit tests. It is both this repository's Cargo library and the injected `horizon_client::biomecompass` (in the
-  game's library, public, so the library's hooks reach it).
-- `item.rs`: `horizon_client::biomecompass_item`, the Biome Compass on the game's item stacks and NBT, the recipe on
+  unit tests. It is both this repository's Cargo library and the injected `horizon_client_lib::biomecompass_support`
+  (in the game's library, public, so the library's hooks reach it).
+- `item.rs`: `horizon_client_lib::biomecompass_item`, the Biome Compass on the game's item stacks and NBT, the recipe on
   its crafting grids, the commands in its command tree.
 - `native.rs`: the adapter to the game (`crate::game::biomecompass_native`), and the state the window and single
   player's server thread share.
@@ -282,7 +290,7 @@ cargo test
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 rustfmt --edition 2024 --check mixins/biomecompass/*.rs   # the game-side files too
-python tools/pack_hnmod.py                                 # dist/biomecompass-0.2.2.hnmod
+python tools/pack_hnmod.py                                 # dist/biomecompass-0.2.3.hnmod
 ```
 
 Written with [Claude Code](https://claude.com/claude-code).

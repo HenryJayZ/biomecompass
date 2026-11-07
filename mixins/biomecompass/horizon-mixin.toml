@@ -1,6 +1,6 @@
 [mod]
 id = "biomecompass"
-version = "0.2.2"
+version = "0.2.3"
 # Its pinned guest_command hook shares Game::guest_command with TreeFall's
 # (200); each claims only its own command, so the order between them doesn't
 # matter. Its other pinned hooks are BiomeCompass's alone.
@@ -10,16 +10,25 @@ priority = 150
 # hook points, and native.rs calls the game's own internals (the level's world
 # generator, `/tp`, the LAN hub, the inventories), so BiomeCompass builds on
 # this commit only. Its other hooks use only hook points (NATIVE_HOOKS_API 1).
+# 0.2.3 retargets it to 6475f62 (Nightly 2026-11-04): Horizon moved the library
+# behind the thin `pub use horizon_client_lib::*` of crates/horizon-client/src/lib.rs
+# into horizon_client_lib (its root: crates/horizon-client/src/client_lib.rs, no
+# glob imports). The two modules in the game's library moved there; the search
+# module is `biomecompass_support`. The `menu` and `lan` injections now name
+# `horizon_client_lib::...`.
 [compatibility]
-horizon_revision = "142388e1c136e622652ec7505af15d8ad195e041"
+horizon_revision = "6475f62f3c834b7489e1816bf47f47ea5eb2b879"
 
 # The search, the settings, the item's components, the recipe and the picker
 # as plain values: in the game's library (public), so the library's hooks (a
 # guest's crafting table, the command tree) reach them as the game's do.
+# client_lib.rs, not lib.rs: lib.rs is a glob re-export of the library, and
+# the mixin planner rejects a support module in a file with a top-level glob
+# import (E_MODULE_CONFLICT). client_lib.rs has none.
 [[module]]
 id = "runtime"
-file = "crates/horizon-client/src/lib.rs"
-name = "biomecompass"
+file = "crates/horizon-client/src/client_lib.rs"
+name = "biomecompass_support"
 source = "runtime.rs"
 visibility = "pub"
 
@@ -27,7 +36,7 @@ visibility = "pub"
 # crafting grids, the commands in its command tree.
 [[module]]
 id = "item"
-file = "crates/horizon-client/src/lib.rs"
+file = "crates/horizon-client/src/client_lib.rs"
 name = "biomecompass_item"
 source = "item.rs"
 visibility = "pub"
@@ -155,7 +164,7 @@ bindings = [
 id = "menu-craft"
 kind = "HEAD"
 cancellable = true
-target = "horizon_client::menu::Menu::recompute"
+target = "horizon_client_lib::menu::Menu::recompute"
 helper = "menu-craft.rs"
 bindings = [
   { name = "menu", ty = "&mut Menu", value = "&mut *self" },
@@ -170,7 +179,7 @@ bindings = [
 id = "commands"
 kind = "HEAD"
 cancellable = true
-target = "horizon_client::lan::hub::Hub::set_mod_commands"
+target = "horizon_client_lib::lan::hub::Hub::set_mod_commands"
 helper = "commands.rs"
 bindings = [
   { name = "hub", ty = "&mut Hub", value = "&mut *self" },

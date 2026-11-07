@@ -2,7 +2,7 @@
 //
 // Original implementation for Horizon (a horizon-mixins native mod). This file is
 // both the standalone, unit-tested Cargo library and the injected
-// `horizon_client::biomecompass` module (in the game's library, so that hooks in
+// `horizon_client_lib::biomecompass_support` module (in the game's library, so that hooks in
 // the library, the crafting menu and the command tree, reach it too). It has no
 // Horizon dependency: the search only hands out block positions to sample and
 // takes back the biome names the world generator gives for them, and the item's
@@ -19,7 +19,7 @@ pub type Actor = [i32; 4];
 /// The mod's id: its row in Options > Mods and its settings folder
 /// (`horizon-mods/.horizon-mod-data/biomecompass/`).
 pub const ID: &str = "biomecompass";
-pub const VERSION: &str = "0.2.2";
+pub const VERSION: &str = "0.2.3";
 pub const DESCRIPTION: &str = "A craftable Biome Compass: right-click it, pick a biome, and its needle points to the nearest one.";
 /// The settings file, in the mod's settings folder.
 pub const CONFIG_FILE: &str = "config.txt";
