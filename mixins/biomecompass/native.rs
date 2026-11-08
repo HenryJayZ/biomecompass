@@ -471,8 +471,8 @@ impl Game<'_> {
         let layers = bc::layers(
             dimension,
             origin[1],
-            self.dim.min_y(),
-            self.dim.max_y(),
+            self.world.shape.min_y,
+            self.world.shape.max_y(),
             config.heights,
         );
         let search = Search::new(Spec {
@@ -552,7 +552,7 @@ impl Game<'_> {
     /// its chunk is loaded, else on the generator's terrain (above water).
     fn bc_landing(&self, terrain: &VanillaTerrain, x: i32, z: i32) -> Option<i32> {
         if self.world.loaded(x, z) {
-            let (lo, hi) = (self.dim.min_y(), self.dim.max_y());
+            let (lo, hi) = (self.world.shape.min_y, self.world.shape.max_y() - 1);
             return (lo..=hi)
                 .rev()
                 .find(|&y| !self.world.is_air(self.world.block(x, y, z)))
