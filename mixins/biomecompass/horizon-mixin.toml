@@ -1,6 +1,6 @@
 [mod]
 id = "biomecompass"
-version = "0.2.3"
+version = "0.2.4"
 # Its pinned guest_command hook shares Game::guest_command with TreeFall's
 # (200); each claims only its own command, so the order between them doesn't
 # matter. Its other pinned hooks are BiomeCompass's alone.
